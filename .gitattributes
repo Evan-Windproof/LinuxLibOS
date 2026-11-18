@@ -1,0 +1,4 @@
+# Unified diff context lines preserve their leading space even when empty.
+ports/kilo/patches/*.patch whitespace=-blank-at-eol
+# Upstream bytes are covered by SHA256SUMS.
+ports/kilo/upstream/* -text

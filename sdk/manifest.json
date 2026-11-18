@@ -1,0 +1,19 @@
+{
+  "abi": {
+    "major": 1,
+    "minor": 2
+  },
+  "export_mode": "working-tree",
+  "license": "GPL-3.0-or-later",
+  "name": "Liberums Kernel ABI SDK",
+  "repository": "https://github.com/Evan-Windproof/Liberums",
+  "sha256": {
+    "elf.h": "2fcfab45adc03ee39169f36b7d43068ad5dd2c008b2b686f94ae137f8e659e5c",
+    "event.h": "210586e4b1e86123b2f14a1d15f2f71918da7993a54ae93cde792063f96d1826",
+    "keyboard.h": "8ff0f4239e88fc4042430c5c720e5655288b0318f9b4ac519fe2facaa3ad7791",
+    "resource.h": "9641ad44d3b036019c80ca7d75e85eb6a4347184b139f345279fa60c3772a298",
+    "syscall.h": "d7da6bab9cc84a34e0b23cfc644dc19334cce868b2b189ffd8baa0b195232a46",
+    "vga.h": "bcaf47ddab8d179334b1908fb1583eb7db781f95bff5bf5053590d5906552424"
+  },
+  "source_commit": "7d5d574e8643c3645fa3ce2a126dcbd4ae43662f"
+}
