@@ -57,5 +57,56 @@ static int ramfs_tests(void)
         CHECK(fd == 3 && close(fd) == 0);
     }
     CHECK(open("/four",O_CREAT | O_RDWR,0600) == -1 && errno == ENOSPC);
+
+    CHECK(stat("test",&info) == 0 && info.st_size == 6 && info.st_mode == S_IFREG);
+    CHECK(stat("test",NULL) == -1 && errno == EINVAL);
+    CHECK(stat("/missing",&info) == -1 && errno == ENOENT);
+    CHECK(access("/test",F_OK) == 0 && access("test",R_OK | W_OK) == 0);
+    CHECK(access("test",X_OK) == -1 && errno == EACCES);
+    CHECK(access("test",8) == -1 && errno == EINVAL);
+    CHECK(access("/missing",F_OK) == -1 && errno == ENOENT);
+    CHECK(unlink("/missing") == -1 && errno == ENOENT);
+    CHECK(rename("/missing","/test") == -1 && errno == ENOENT);
+    CHECK(rename("/test","/dir/name") == -1 && errno == EINVAL);
+    CHECK(stat("/test",&info) == 0 && info.st_size == 6);
+
+    int source = open("/one",O_RDWR);
+    int target = open("/two",O_RDWR);
+    CHECK(source == 3 && target == 4);
+    CHECK(write(source,"alpha",5) == 5 && write(target,"beta",4) == 4);
+    CHECK(rename("/one","one") == 0);
+    CHECK(rename("one","/other") == 0);
+    CHECK(stat("/one",&info) == -1 && errno == ENOENT);
+    CHECK(stat("/other",&info) == 0 && info.st_size == 5);
+    CHECK(rename("/other","/two") == 0);
+    CHECK(stat("/other",&info) == -1 && errno == ENOENT);
+    CHECK(stat("two",&info) == 0 && info.st_size == 5);
+    CHECK(fstat(target,&info) == 0 && info.st_size == 4);
+    CHECK(lseek(target,0,SEEK_SET) == 0 && read(target,data,sizeof(data)) == 4);
+    CHECK(memcmp(data,"beta",4) == 0);
+    CHECK(lseek(source,0,SEEK_CUR) == 5);
+
+    fd = open("/two",O_RDONLY);
+    CHECK(fd == 5 && read(fd,data,sizeof(data)) == 5 && memcmp(data,"alpha",5) == 0);
+    CHECK(unlink("two") == 0);
+    CHECK(open("/two",O_RDONLY) == -1 && errno == ENOENT);
+    CHECK(open("/two",O_CREAT | O_RDWR,0600) == -1 && errno == ENOSPC);
+    CHECK(close(target) == 0);
+    int replacement = open("/two",O_CREAT | O_EXCL | O_RDWR,0600);
+    CHECK(replacement == target && read(replacement,data,1) == 0);
+    CHECK(write(replacement,"new",3) == 3);
+    CHECK(lseek(fd,0,SEEK_SET) == 0 && read(fd,data,sizeof(data)) == 5);
+    CHECK(memcmp(data,"alpha",5) == 0);
+    CHECK(close(source) == 0);
+    CHECK(open("/one",O_CREAT | O_RDWR,0600) == -1 && errno == ENOSPC);
+
+    CHECK(posix_close_files() == 2 && posix_close_files() == 0);
+    CHECK(close(fd) == -1 && errno == EBADF);
+    CHECK(lseek(0,0,SEEK_SET) == -1 && errno == ESPIPE);
+    fd = open("/one",O_CREAT | O_RDWR,0600);
+    CHECK(fd == 3 && read(fd,data,1) == 0 && close(fd) == 0);
+    fd = open("two",O_RDONLY);
+    CHECK(fd == 3 && read(fd,data,sizeof(data)) == 3 && memcmp(data,"new",3) == 0);
+    CHECK(close(fd) == 0);
     return 0;
 }

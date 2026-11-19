@@ -5,6 +5,10 @@ import traceback
 
 import gdb
 
+EDITED_FILE = b"Hello from Linux Compatibility LibOS\n"
+VGA = 0x09400000
+TTY_MODE = "'src/tty.c'::mode"
+
 
 def value(expression):
     return int(gdb.parse_and_eval(expression)) & 0xFFFFFFFF
@@ -36,6 +40,11 @@ def go(symbol, condition=None):
 
 def stage(number):
     go("libos_observe", f"*(unsigned int *)($esp + 4) == {number}")
+
+
+def input_ready(name):
+    with open(RUN_DIRECTORY + "/" + name, "w") as marker:
+        marker.write("ready\n")
 
 
 def pte(slot, address):
@@ -86,7 +95,7 @@ KERNEL_KBD = "'kernel/keyboard.c'::keyboard"
 
 
 def devices():
-    assert pte(1, 0x09400000) & 0xFFFFF09F == 0xB801F
+    assert pte(1, VGA) & 0xFFFFF09F == 0xB801F
     for device, rights in (("vga_device", 3), (KERNEL_KBD, 1)):
         assert value(device + ".grant_id") == value(device + ".cap.owner_id") == 1
         assert value(device + ".cap.owner_epoch") == domain(1, "epoch")
@@ -113,15 +122,100 @@ def finished(expected, image_pages, extra=()):
     assert free_pages == value("multi_free_before")
     irq0, irq1 = value("irq_count"), value("keyboard_irqs")
     assert irq0 == value("eoi_count") and irq1 == value("keyboard_eois")
-    if SCENARIO in ("editor", "tty"):
+    if SCENARIO in ("editor", "editor-long", "launcher", "tty"):
         assert irq0 > 0 and irq1 > 0
     print(f"Recovery: {free_pages} free pages; IRQ0={irq0}, IRQ1={irq1}; zeroed mappings")
+
+
+def app_mappings():
+    user(1)
+    devices()
+    pages = arena(1)
+    tables = [domain(1, "space.dynamic_table"), domain(1, "space.device_table")]
+    return pages + tables
+
+
+def app_released():
+    stage(4)
+    assert all(pte(1, 0x09000000 + i * 4096) == 0 for i in range(4))
+    assert pte(1, VGA) == 0 and domain(1, "resource_count") == 0
+
+
+def editor(image_pages):
+    status = 71 if SCENARIO == "oom" else 0
+    go("kilo_run" if status else "editorProcessKeypress")
+    pages = app_mappings()
+    if SCENARIO == "editor":
+        assert memory(VGA, 38)[::2] == b"Hello from Liberums"
+        go("editorProcessKeypress", "E.cx == 19 && E.cy == 0")
+        assert value("column") == 19 and value("row") == 0
+        input_ready("cursor-audited")
+
+    stage(3)
+    expected = {
+        "editor": EDITED_FILE,
+        "editor-long": b"x" * 4095 + b"\n",
+        "oom": b"\t" * 4095 + b"\n",
+    }[SCENARIO]
+    assert value("editor_readback_size") == len(expected)
+    assert memory(value("&editor_readback"), len(expected)) == expected
+    assert value("heap_live_bytes") == 0
+    assert value("heap_oom_count") == int(status != 0)
+    peak = value("heap_peak_bytes")
+    assert 0 < peak < 4 * 4096
+    if status:
+        requested = value("heap_failed_bytes")
+        assert requested > 4 * 4096
+        print(f"Kilo OOM: requested={requested} peak={peak}")
+    print(f"Kilo reopened {len(expected)} verified bytes; heap peak={peak}")
+    app_released()
+    finished([(3, status)], image_pages, pages)
+
+
+def launcher(image_pages):
+    go("kilo_run")
+    pages = app_mappings()
+    generations = [value(device + ".cap.generation") for device in ("vga_device", KERNEL_KBD)]
+    cr3 = value("$cr3")
+
+    def returned(count):
+        stage(5)
+        assert value("current_domain->id") == 1 and value("$cr3") == cr3
+        assert value("app_returns") == count and value("app_last_status") == 0
+        assert value("app_leak_count") == 0 and value("heap_live_bytes") == 0
+        assert value(TTY_MODE + ".c_lflag") == 3  # ICANON | ECHO
+        devices()
+        assert [value(device + ".cap.generation") for device in ("vga_device", KERNEL_KBD)] == generations
+        assert arena(1) == pages[:4]
+
+    def cat():
+        go("sbase_cat")
+        stack = value("$esp")
+        assert word(stack + 4) == 2
+        argument = word(word(stack + 8) + 4)
+        assert memory(argument, 11) == b"/hello.txt\0"
+        go("write", f"*(int *)($esp + 4) == 1 && *(unsigned int *)($esp + 12) == {len(EDITED_FILE)}")
+        buffer = word(value("$esp") + 8)
+        assert memory(buffer, len(EDITED_FILE)) == EDITED_FILE
+
+    returned(1)
+    cat()
+    returned(2)
+    returned(3)
+    cat()
+    returned(4)
+    returned(5)
+    assert value("heap_oom_count") == 0
+    print(f"Launcher returned from {value('app_returns')} applications; heap peak={value('heap_peak_bytes')}")
+    app_released()
+    finished([(3, 0)], image_pages, pages)
 
 
 def run():
     go("multi_prepared")
     expected_modules = {
         "hello": [0], "editor": [0], "tty": [0], "oom": [0],
+        "editor-long": [0], "launcher": [0],
         "no-grant": [0, 0], "no-keyboard-grant": [0, 0],
         "revoke": [0], "forced-revoke": [0], "fault-and-rejection": [0, -8, 0],
     }[SCENARIO]
@@ -143,27 +237,10 @@ def run():
     abi()
     if SCENARIO == "hello":
         finished([(3, 0)], image_pages)
-    elif SCENARIO == "editor":
-        go("editorProcessKeypress")
-        user(1)
-        pages = arena(1)
-        tables = [domain(1, "space.dynamic_table"), domain(1, "space.device_table")]
-        devices()
-        assert memory(0x09400000, 38)[::2] == b"Hello from Liberums"
-        go("editorProcessKeypress", "E.cx == 19 && E.cy == 0")
-        assert value("column") == 19 and value("row") == 0
-        with open(RUN_DIRECTORY + "/cursor-audited", "w") as marker:
-            marker.write("ready\n")
-        stage(3)
-        expected = b"Hello from Linux Compatibility LibOS\n"
-        assert value("editor_readback_size") == len(expected)
-        assert memory(value("&editor_readback"), len(expected)) == expected
-        assert value("heap_oom_count") == 0
-        print(f"Kilo reopened {len(expected)} verified bytes; heap peak={value('heap_peak_bytes')}")
-        stage(4)
-        assert pte(1, 0x09000000) == pte(1, 0x09400000) == 0
-        assert domain(1, "resource_count") == 0
-        finished([(3, 0)], image_pages, pages + tables)
+    elif SCENARIO in ("editor", "editor-long", "oom"):
+        editor(image_pages)
+    elif SCENARIO == "launcher":
+        launcher(image_pages)
     elif SCENARIO == "tty":
         stage(2)
         pages = arena(1)
@@ -171,6 +248,7 @@ def run():
         fixture_go("tty_read")
         devices()
         assert memory(0x09400000 + 23 * 160, 2) == b"R\x04"
+        input_ready("canonical-audited")
         fixture_go("libos_observe", "*(unsigned int *)($esp + 4) == 3")
         assert all(pte(1, 0x09000000 + i * 4096) == 0 for i in range(4))
         fixture_go("libos_observe", "*(unsigned int *)($esp + 4) == 4")
@@ -188,11 +266,6 @@ def run():
         go("domain_exit", "current_domain->id == 1")
         assert pte(1, 0x09400000) == 0 and value("vga_device.active") == 0
         finished([(3, 77), (3, 0)], image_pages)
-    elif SCENARIO == "oom":
-        go("domain_exit")
-        assert value("heap_failed_bytes") == 4095 and value("heap_oom_count") == 1
-        print(f"Kilo OOM: requested={value('heap_failed_bytes')} peak={value('heap_peak_bytes')}")
-        finished([(3, 71)], image_pages, arena(1))
     elif SCENARIO in ("revoke", "forced-revoke"):
         stage(2)
         pages = arena(1)

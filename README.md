@@ -1,29 +1,27 @@
-# Linux Compatibility LibOS
+# LinuxLibOS
 
-Phase 1 在不变更 Liberums v1.0.0 的情况下，用独立 Ring 3 Library OS 运行重新编译的终端应用。Liberums ABI 1.2 保护 CPU、内存和设备资源。用户态 LibOS 实现堆、文件描述符、RAM 文件系统和终端策略。项目只依赖公开 Kernel SDK；Aelthuvor 是另一个独立 LibOS。
+LinuxLibOS 是基于 Liberums v1.0.0 公共 Kernel SDK 1.2 的独立 i686 Ring 3 Library OS。Phase 1 建立堆、RAM 文件系统、文件描述符和 VGA/PS/2 终端，并移植 Kilo。Phase 2 增加同一用户域内的静态应用选择器和真实上游 sbase `cat`，使 Kilo 保存的 RAM 文件可以由另一个应用读出。
 
-支持的软件为 [Kilo](ports/kilo/README.md) 的小型纯文本移植版。支持部分 POSIX 风格接口，以及从真实上游源码重新编译运行。未实现未修改的 Linux ELF32 装载与 Linux 系统调用兼容。各项能力与证据见 [兼容性矩阵](docs/compatibility-matrix.md)。
+## 构建与使用
 
-## 构建与运行
-
-需要 GNU Make、GCC 的 freestanding i686 支持、GNU Binutils、Python 3、GNU Patch 和 Git。集成验收需要 QEMU i386 与支持 Python 的 GDB。本地交互还需要 QEMU GTK 后端和桌面会话。
+需要 GCC 的 freestanding i686 支持、GNU Make 4.3+、GNU Binutils、GNU Patch、Git 和 Python 3。集成测试需要 QEMU i386 和带 Python 的 GDB。GTK 运行入口需要桌面会话及 QEMU 的 GTK 后端。实测版本见 [Phase 2 验证](docs/phase2-validation.md)。
 
 ```sh
-make                  # 构建 build/hello.elf 与 build/editor.elf
-make test             # 宿主 RAM FS、SDK/上游文件校验、ELF 布局
-make integration      # 32 MiB / 1 CPU 的 QEMU TCG，含 QMP 模拟 PS/2 和 GDB
-make run              # 本地 GTK，以可信启动参数授权 VGA 和键盘
-make clean            # 删除生成文件与默认下载的内核 checkout
+make                  # 构建 hello、独立 Kilo 和 Launcher ELF
+make run               # 保留原入口，直接启动 Kilo
+make run-launcher      # GTK 应用选择器
+make test              # 宿主 RAM FS 测试、SDK/上游哈希和 ELF 布局
+make integration       # QEMU TCG + GDB + QMP 模拟 PS/2
+make debug DISPLAY_BACKEND=none
+make clean
 ```
 
-`make integration` 和 `make run` 默认下载并检查固定内核提交。可用 `LIBERUMS=/absolute/path` 指定已有的干净 checkout。设置 `QEMU=/path/qemu-system-i386 GDB=/path/gdb` 可以选择调试工具。
+内核运行目标会下载并验证固定版本。可设置 `LIBERUMS=/absolute/path` 复用干净的指定 checkout，也可使用 `QEMU=/path/qemu-system-i386 GDB=/path/gdb`。调试时用 GDB 加载内核 ELF，执行 `target remote :1234`，再用 `add-symbol-file build/editor.elf` 加载用户程序符号。
 
-Kilo 默认打开 `/hello.txt`。方向键移动，Ctrl-S 保存，Ctrl-F 搜索，Ctrl-Q 退出。退出后，LibOS 在同一域内重新打开并读取 RAM 文件，再归还资源。域退出后 QEMU 保持运行，关闭窗口或结束 QEMU 即可。RAM 文件仅在该域的运行期间有效。
+Kilo 默认编辑 `/hello.txt`。Ctrl-S 保存，Ctrl-F 搜索，Ctrl-Q 退出。有未保存修改时，首次 Ctrl-Q 提示再按三次。Launcher 输入 `1` 至 `4` 并按 Enter，依次选择 Kilo、`cat`、文件信息或退出。Kilo 退出后返回菜单。文件查看结束后按 Enter 返回。直接运行时，Kilo 退出后显示会话和 RAM 回读结果。域退出后 QEMU 窗口保持打开。
 
-`make debug DISPLAY_BACKEND=none` 以暂停状态启动 QEMU。另一个终端运行 `gdb build/liberums/build/liberums.elf`，然后执行 `target remote :1234` 和 `add-symbol-file build/editor.elf`。在 `libos_observe` 设置硬件断点可检查 ABI、用户栈与退出前的回读结果。自动验收及限制见 [验证报告](docs/validation.md)。
+## 接口与范围
 
-## 接口和限制
+支持 `open/close/read/write/lseek/fstat/ftruncate/stat/unlink/access/rename` 与 `isatty/ioctl/tcgetattr/tcsetattr`。RAM FS 有四个文件对象槽，每文件最多 4096 字节，内容随用户域结束而消失。应用切换共享文件、TTY 和域资源，使用静态入口函数。尚无 Linux 进程创建、原生 Linux ELF32 运行或持久文件系统。 [POSIX 子集](docs/posix-subset.md) · [兼容性矩阵](docs/compatibility-matrix.md) · [已知限制](docs/known-limitations.md)
 
-文件接口为 `open/close/read/write/lseek/fstat/ftruncate`，终端接口为 `isatty/ioctl/tcgetattr/tcsetattr`。定长 RAM FS、16 KiB 动态堆、80×25 VGA、US ASCII 键盘；详细语义见 [POSIX 子集](docs/posix-subset.md) 和 [终端](docs/terminal.md)。
-
-项目代码、Liberums SDK 和链接脚本等采用 GPL-3.0-or-later，Kilo 上游文件保留 BSD-2-Clause 许可。源码来源、固定提交和修改摘要见 [Kilo 移植说明](ports/kilo/README.md)。内核 ABI 可行性审查及 Linux i386 二进制研究见 [Phase 1 可行性审查](docs/feasibility.md) 和 [Linux ELF32 研究](docs/linux-binary-compatibility-feasibility.md)。
+项目代码与 SDK 为 GPL-3.0-or-later。Kilo 上游为 BSD-2-Clause，sbase `cat` 上游为 MIT。 [Kilo 源码与补丁](ports/kilo/README.md) · [sbase 源码与补丁](ports/sbase-cat/README.md)

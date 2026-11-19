@@ -1,5 +1,7 @@
 # Phase 1 验证报告
 
+此页保留 Phase 1 的原始实测。当前结果见 [Phase 2 验证](phase2-validation.md)。
+
 实测使用 Debian 13 x86-64 宿主、GCC 14.2、GNU Make 4.4.1、QEMU 10.0.13 和 GDB 16.3。启动固定 commit `7d5d574e8643c3645fa3ce2a126dcbd4ae43662f` 的 Liberums，i686 / TCG / SMP 1 / 32 MiB。内核源码工作树干净。实测内核 ELF 的 SHA256 在所有 guest 前后保持一致：
 
 ```text

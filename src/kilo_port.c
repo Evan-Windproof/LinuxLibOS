@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "kilo_port.h"
+#include "application.h"
 
 static void append(char *buffer, size_t capacity, size_t *size, char byte)
 {
@@ -75,7 +76,7 @@ _Noreturn void kilo_fail(const char *operation)
     char diagnostic[96];
     kilo_format(diagnostic,sizeof(diagnostic),"Kilo %.32s: %.32s\n",operation,strerror(errno));
     libos_log(diagnostic);
-    libos_exit(70);
+    app_abort(70);
 }
 
 void *kilo_alloc(void *pointer, size_t size, const char *caller)
@@ -89,7 +90,14 @@ void *kilo_alloc(void *pointer, size_t size, const char *caller)
         char diagnostic[96];
         kilo_format(diagnostic,sizeof(diagnostic),"Kilo OOM: %.32s requested %d bytes\n",caller,(int)size);
         libos_log(diagnostic);
-        libos_exit(71);
+        app_abort(71);
     }
     return result;
+}
+
+uint32_t kilo_hash(uint32_t hash, const void *buffer, size_t size)
+{
+    const unsigned char *bytes = buffer;
+    while (size--) hash = (hash ^ *bytes++) * UINT32_C(16777619);
+    return hash;
 }

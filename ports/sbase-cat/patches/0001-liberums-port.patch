@@ -1,0 +1,187 @@
+--- a/cat.c
++++ b/cat.c
+@@ -1,50 +1,77 @@
+ /* See LICENSE file for copyright and license details. */
+-#include <fcntl.h>
+-#include <string.h>
+-#include <unistd.h>
+-
+-#include "util.h"
++#include "sbase_cat.h"
++#include "sbase_cat_internal.h"
++#include "libos.h"
+ 
+ static void
++diagnostic(const char *text)
++{
++	sbase_cat_writeall(STDERR_FILENO, text, strlen(text));
++}
++
++void
++sbase_cat_error(const char *operation, const char *name)
++{
++	int error = errno;
++	diagnostic("cat: ");
++	diagnostic(operation);
++	diagnostic(" ");
++	diagnostic(name);
++	diagnostic(": ");
++	diagnostic(strerror(error));
++	diagnostic("\n");
++}
++
++static int
+ usage(void)
+ {
+-	eprintf("usage: %s [-u] [file ...]\n", argv0);
++	diagnostic("usage: cat [-u] file ...\n");
++	return 1;
+ }
+ 
+ int
+-main(int argc, char *argv[])
++sbase_cat(int argc, const char *const argv[])
+ {
+ 	int fd, ret = 0;
+ 
+-	ARGBEGIN {
+-	case 'u':
+-		break;
+-	default:
+-		usage();
+-	} ARGEND
++	/* The launcher owns argv, so leave it intact while parsing options. */
++	for (; argc > 1 && argv[1][0] == '-' && argv[1][1]; --argc, ++argv) {
++		const char *option = argv[1] + 1;
++		if (option[0] == '-' && !option[1]) {
++			--argc;
++			++argv;
++			break;
++		}
++		for (; *option; ++option)
++			if (*option != 'u')
++				return usage();
++	}
++
++	if (argc <= 1)
++		return usage();
+ 
+-	if (!argc) {
+-		if (concat(0, "<stdin>", 1, "<stdout>") < 0)
++	for (--argc, ++argv; argc; --argc, ++argv) {
++		if (!strncmp(*argv, "-", 2)) {
++			diagnostic("cat: stdin has no EOF in this terminal\n");
++			ret = 1;
++			continue;
++		}
++		if ((fd = open(*argv, O_RDONLY)) < 0) {
++			sbase_cat_error("open", *argv);
++			ret = 1;
++			continue;
++		}
++		int copied = sbase_cat_concat(fd, *argv, STDOUT_FILENO, "<stdout>");
++		if (close(fd) < 0) {
++			sbase_cat_error("close", *argv);
++			ret = 1;
++		}
++		switch (copied) {
++		case -1:
+ 			ret = 1;
+-	} else {
+-		for (; *argv; argc--, argv++) {
+-			if (!strcmp(*argv, "-")) {
+-				*argv = "<stdin>";
+-				fd = 0;
+-			} else if ((fd = open(*argv, O_RDONLY)) < 0) {
+-				weprintf("open %s:", *argv);
+-				ret = 1;
+-				continue;
+-			}
+-			switch (concat(fd, *argv, 1, "<stdout>")) {
+-			case -1:
+-				ret = 1;
+-				break;
+-			case -2:
+-				return 1;  /* exit on write error */
+-			}
+-			if (fd != 0)
+-				close(fd);
++			break;
++		case -2:
++			return 1;  /* exit on write error */
+ 		}
+ 	}
+ 
+--- a/libutil/concat.c
++++ b/libutil/concat.c
+@@ -1,22 +1,20 @@
+ /* See LICENSE file for copyright and license details. */
+-#include <unistd.h>
+-
+-#include "../util.h"
++#include "../sbase_cat_internal.h"
+ 
+ int
+-concat(int f1, const char *s1, int f2, const char *s2)
++sbase_cat_concat(int f1, const char *s1, int f2, const char *s2)
+ {
+-	char buf[BUFSIZ];
++	char buf[512];
+ 	ssize_t n;
+ 
+ 	while ((n = read(f1, buf, sizeof(buf))) > 0) {
+-		if (writeall(f2, buf, n) < 0) {
+-			weprintf("write %s:", s2);
++		if (sbase_cat_writeall(f2, buf, n) < 0) {
++			sbase_cat_error("write", s2);
+ 			return -2;
+ 		}
+ 	}
+ 	if (n < 0) {
+-		weprintf("read %s:", s1);
++		sbase_cat_error("read", s1);
+ 		return -1;
+ 	}
+ 	return 0;
+--- a/libutil/writeall.c
++++ b/libutil/writeall.c
+@@ -1,18 +1,20 @@
+ /* See LICENSE file for copyright and license details. */
+-#include <unistd.h>
+-
+-#include "../util.h"
++#include "../sbase_cat_internal.h"
+ 
+ ssize_t
+-writeall(int fd, const void *buf, size_t len)
++sbase_cat_writeall(int fd, const void *buf, size_t len)
+ {
+ 	const char *p = buf;
+ 	ssize_t n;
+ 
+ 	while (len) {
+ 		n = write(fd, p, len);
+-		if (n <= 0)
++		if (n < 0)
+ 			return n;
++		if (n == 0) {
++			errno = EIO;
++			return -1;
++		}
+ 		p += n;
+ 		len -= n;
+ 	}
+--- /dev/null
++++ b/sbase_cat_internal.h
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef LINUXLIBOS_SBASE_CAT_INTERNAL_H
++#define LINUXLIBOS_SBASE_CAT_INTERNAL_H
++
++#include "posix.h"
++
++int sbase_cat_concat(int input, const char *source, int output, const char *destination);
++ssize_t sbase_cat_writeall(int fd, const void *data, size_t count);
++void sbase_cat_error(const char *operation, const char *name);
++
++#endif

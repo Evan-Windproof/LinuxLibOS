@@ -2,3 +2,5 @@
 ports/kilo/patches/*.patch whitespace=-blank-at-eol
 # Upstream bytes are covered by SHA256SUMS.
 ports/kilo/upstream/* -text
+ports/sbase-cat/patches/*.patch whitespace=-blank-at-eol
+ports/sbase-cat/upstream/** -text

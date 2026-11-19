@@ -11,6 +11,8 @@ void libos_safe_point(void);
 
 int heap_open(void);
 int heap_close(void);
+void heap_reset(void);
+extern size_t heap_live_bytes;
 extern size_t heap_peak_bytes;
 extern size_t heap_failed_bytes;
 extern unsigned heap_oom_count;

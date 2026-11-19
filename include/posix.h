@@ -10,7 +10,7 @@ typedef int32_t ssize_t;
 
 extern int errno;
 enum {
-    EPERM = 1, ENOENT = 2, EIO = 5, EBADF = 9, EAGAIN = 11, ENOMEM = 12,
+    EPERM = 1, ENOENT = 2, EIO = 5, EBADF = 9, EAGAIN = 11, ENOMEM = 12, EACCES = 13,
     EBUSY = 16, EEXIST = 17, EINVAL = 22, EMFILE = 24, ENOTTY = 25, ENOSPC = 28,
     ESPIPE = 29, ENAMETOOLONG = 36, ENOSYS = 38, EOVERFLOW = 75, ESTALE = 116
 };
@@ -31,6 +31,10 @@ const char *strerror(int error);
 #define SEEK_END 2
 #define S_IFREG 0100000u
 #define S_IFCHR 0020000u
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
 
 struct stat {
     off_t st_size;
@@ -42,7 +46,11 @@ int close(int fd);
 ssize_t read(int fd, void *buffer, size_t count);
 ssize_t write(int fd, const void *buffer, size_t count);
 off_t lseek(int fd, off_t offset, int whence);
-int fstat(int fd, struct stat *stat);
+int fstat(int fd, struct stat *info);
+int stat(const char *name, struct stat *info);
+int unlink(const char *name);
+int access(const char *name, int mode);
+int rename(const char *old_path, const char *new_path);
 int ftruncate(int fd, off_t size);
 int isatty(int fd);
 int ioctl(int fd, unsigned long request, ...);
@@ -68,5 +76,8 @@ struct termios {
 
 int tcgetattr(int fd, struct termios *mode);
 int tcsetattr(int fd, int action, const struct termios *mode);
+
+/* Close application file descriptors at the launcher boundary. */
+unsigned posix_close_files(void);
 
 #endif

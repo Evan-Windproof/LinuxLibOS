@@ -17,8 +17,7 @@ _Static_assert(sizeof(struct block) == ALIGNMENT, "heap header alignment");
 
 static struct resource_handle pages[HEAP_PAGES];
 static unsigned page_count;
-static size_t live_bytes;
-size_t heap_peak_bytes, heap_failed_bytes;
+size_t heap_live_bytes, heap_peak_bytes, heap_failed_bytes;
 unsigned heap_oom_count;
 
 static unsigned char *const arena = (void *)RESOURCE_WINDOW;
@@ -74,8 +73,8 @@ int heap_open(void)
         int cleanup = heap_close();
         return cleanup ? cleanup : status;
     }
-    *(struct block *)arena = (struct block){ .capacity = HEAP_BYTES - sizeof(struct block) };
-    heap_peak_bytes = heap_failed_bytes = live_bytes = 0;
+    heap_reset();
+    heap_peak_bytes = heap_failed_bytes = 0;
     heap_oom_count = 0;
     return 0;
 }
@@ -95,6 +94,13 @@ int heap_close(void)
     return first_error;
 }
 
+void heap_reset(void)
+{
+    libos_safe_point();
+    *(struct block *)arena = (struct block){ .capacity = HEAP_BYTES - sizeof(struct block) };
+    heap_live_bytes = 0;
+}
+
 static void *oom(size_t size)
 {
     heap_failed_bytes = size;
@@ -105,9 +111,9 @@ static void *oom(size_t size)
 
 static void set_used(struct block *block, size_t size)
 {
-    live_bytes -= block->used;
-    live_bytes += size;
-    if (live_bytes > heap_peak_bytes) heap_peak_bytes = live_bytes;
+    heap_live_bytes -= block->used;
+    heap_live_bytes += size;
+    if (heap_live_bytes > heap_peak_bytes) heap_peak_bytes = heap_live_bytes;
     block->used = size;
 }
 

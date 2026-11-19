@@ -14,6 +14,13 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
+EDITED_TEXT = b"Hello from Linux Compatibility LibOS"
+FINAL_SCREENS = {
+    "editor": (b"Kilo session ended.", b"RAM file verification: PASS", b"Session complete."),
+    "editor-long": (b"Kilo session ended.", b"RAM file verification: PASS",
+                    b"Save failed; previous file preserved."),
+    "launcher": (b"Session complete.",),
+}
 
 
 def wait_for(check, description, seconds=12):
@@ -53,13 +60,19 @@ class Qmp:
                 return response["return"]
 
     def key(self, key):
+        wait_for(lambda: self.command("query-status")["running"], "QEMU keyboard input")
         response = self.command("human-monitor-command", **{"command-line": f"sendkey {key} 20"})
         assert not response, response
         time.sleep(0.055)
 
     def key_edge(self, key, down):
+        self.keys([(key, down)])
+
+    def keys(self, edges):
+        wait_for(lambda: self.command("query-status")["running"], "QEMU keyboard input")
         self.command("input-send-event", events=[
             {"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": key}}}
+            for key, down in edges
         ])
 
     def screen(self, path):
@@ -76,31 +89,90 @@ def type_text(qmp, text):
         qmp.key("shift-" + name if letter.isupper() else name)
 
 
-def editor_input(qmp, serial, directory):
-    del serial
-    screen = directory / "vga.raw"
+def wait_screen(qmp, directory, *texts):
+    def visible():
+        screen = qmp.screen(directory / "vga.raw")
+        return all(text in screen for text in texts)
 
-    def visible(text):
-        wait_for(lambda: text in qmp.screen(screen), repr(text))
+    wait_for(visible, repr(texts))
 
-    visible(b"Hello from Liberums")
-    visible(b"HELP: Ctrl-S = save")
-    qmp.key("esc")
-    for _ in range(19):
-        qmp.key("right")
-    wait_for(lambda: (directory / "cursor-audited").exists(), "GDB cursor audit")
-    for _ in range(8):
-        qmp.key("backspace")
-    type_text(qmp, "Linux Compatibility LibOS")
-    visible(b"Hello from Linux Compatibility LibOS")
-    qmp.key("ctrl-s")
-    visible(b"37 bytes saved in RAM")
+
+def confirm_dirty_quit(qmp, directory):
+    for count in (3, 2, 1):
+        qmp.key("ctrl-q")
+        wait_screen(qmp, directory, f"Press Ctrl-Q {count} more times to quit.".encode())
     qmp.key("ctrl-q")
 
 
+def edit_hello(qmp, directory, audit_cursor=False, check_dirty_quit=False):
+    wait_screen(qmp, directory, b"Hello from Liberums", b"HELP: Ctrl-S = save")
+    qmp.key("esc")
+    for _ in range(19):
+        qmp.key("right")
+    if audit_cursor:
+        wait_for(lambda: (directory / "cursor-audited").exists(), "GDB cursor audit")
+    for _ in range(8):
+        qmp.key("backspace")
+    type_text(qmp, "Linux Compatibility LibOS")
+    wait_screen(qmp, directory, EDITED_TEXT)
+    if check_dirty_quit:
+        qmp.key("ctrl-q")
+        wait_screen(qmp, directory, b"Press Ctrl-Q 3 more times to quit.", EDITED_TEXT)
+    qmp.key("ctrl-s")
+    wait_screen(qmp, directory, b"37 bytes saved in RAM")
+    qmp.key("ctrl-q")
+
+
+def editor_input(qmp, serial, directory):
+    del serial
+    edit_hello(qmp, directory, audit_cursor=True, check_dirty_quit=True)
+
+
+def long_editor_input(qmp, serial, directory):
+    del serial
+    wait_screen(qmp, directory, b"x" * 78, b"HELP: Ctrl-S = save")
+    qmp.key("z")
+    wait_screen(qmp, directory, b"z" + b"x" * 77)
+    qmp.key("ctrl-s")
+    wait_screen(qmp, directory, b"Can't save: RAM file space exhausted")
+    confirm_dirty_quit(qmp, directory)
+
+
+def launcher_input(qmp, serial, directory):
+    del serial
+
+    def choose(digit):
+        wait_screen(qmp, directory, b"LinuxLibOS Phase 2", b"4. Exit")
+        qmp.key(digit)
+        qmp.key("ret")
+
+    def read_with_cat():
+        choose("2")
+        wait_screen(qmp, directory, EDITED_TEXT, b"Press Enter to return.")
+        qmp.key("ret")
+
+    choose("1")
+    edit_hello(qmp, directory)
+    read_with_cat()
+
+    choose("1")
+    wait_screen(qmp, directory, EDITED_TEXT, b"HELP: Ctrl-S = save")
+    # Ordinary q/s after the Ctrl chords must stay printable in this session.
+    qmp.keys([("shift", True), ("x", True), ("x", False), ("shift", False),
+              ("q", True), ("q", False), ("s", True), ("s", False)])
+    wait_screen(qmp, directory, b"Xqs" + EDITED_TEXT)
+    confirm_dirty_quit(qmp, directory)
+    read_with_cat()
+
+    choose("3")
+    wait_screen(qmp, directory, b"/hello.txt", b"37 bytes", b"Press Enter to return.")
+    qmp.key("ret")
+    choose("4")
+
+
 def tty_input(qmp, serial, directory):
-    del directory
-    wait_for(lambda: "TTY canonical ready" in serial.read_text(), "canonical fixture")
+    wait_for(lambda: (directory / "canonical-audited").exists(), "GDB canonical TTY audit")
+    assert "TTY canonical ready" in serial.read_text()
     for key in ("shift-a", "x", "backspace", "b", "ret"):
         qmp.key(key)
     wait_for(lambda: "TTY raw ready" in serial.read_text(), "raw fixture")
@@ -158,14 +230,20 @@ def tools_and_qmp(args, label, directory, modules, options, input_fn):
                     raise RuntimeError(audit)
                 if job:
                     job.result()
-            wait_for(lambda: "multi external execution completed" in serial.read_text(),
-                     "kernel lifecycle completion")
+                wait_for(lambda: "multi external execution completed" in serial.read_text(),
+                         "kernel lifecycle completion")
+                (out / f"{label}.vga.txt").unlink(missing_ok=True)
+                if label in FINAL_SCREENS:
+                    screenshot = qmp.screen(directory / "vga.raw")
+                    rows = [screenshot[i:i + 80].decode("ascii", errors="replace").rstrip()
+                            for i in range(0, len(screenshot), 80)]
+                    (out / f"{label}.vga.txt").write_text("\n".join(rows) + "\n")
+                    for text in FINAL_SCREENS[label]:
+                        assert text in screenshot, f"{label}: missing final VGA text {text!r}"
             guest_log = serial.read_text()
             assert "PANIC" not in guest_log
             if label == "oom":
-                assert "Kilo OOM: editorUpdateSyntax requested 4095 bytes" in guest_log
-            if label == "editor":
-                assert "RAM file reopened; session closed" in guest_log
+                assert "Kilo OOM: editorUpdateRow requested " in guest_log
             print(f"PASS: {label}", flush=True)
         finally:
             vm.terminate()
@@ -199,6 +277,8 @@ def main():
         "revoke": (["guest-test.elf"], "selftest=phase9", None),
         "forced-revoke": (["guest-test.elf"], "selftest=phase9", None),
         "fault-and-rejection": (["fault-fixture.elf", "bad.elf", "hello.elf"], "", None),
+        "launcher": (["launcher.elf"], grants, launcher_input),
+        "editor-long": (["editor-long.elf"], grants, long_editor_input),
     }
     selected = args.scenario or list(cases)
     for label in selected:

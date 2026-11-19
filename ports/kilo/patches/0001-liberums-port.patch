@@ -1,6 +1,6 @@
 --- a/kilo.c
 +++ b/kilo.c
-@@ -34,25 +34,13 @@
+@@ -34,25 +34,14 @@
  
  #define KILO_VERSION "0.0.1"
  
@@ -28,12 +28,37 @@
 +#define malloc(size) kilo_alloc(NULL,(size),__func__)
 +#define realloc(pointer,size) kilo_alloc((pointer),(size),__func__)
 +
-+static int quit_requested;
++static int quit_requested, quit_times;
++static struct kilo_save *save_result;
 +void editorRefreshScreen(void);
  
  /* Syntax highlight types */
  #define HL_NORMAL 0
-@@ -105,7 +93,7 @@
+@@ -71,7 +60,7 @@
+ struct editorSyntax {
+     char **filematch;
+     char **keywords;
+-    char singleline_comment_start[2];
++    char singleline_comment_start[3];
+     char multiline_comment_start[3];
+     char multiline_comment_end[3];
+     int flags;
+@@ -83,7 +72,8 @@
+     int size;           /* Size of the row, excluding the null term. */
+     int rsize;          /* Size of the rendered row. */
+     char *chars;        /* Row content. */
+-    char *render;       /* Row content "rendered" for screen (for TABs). */
++    char *render;       /* Aliases chars when no tab expansion is needed. */
++    int render_allocated;
+     unsigned char *hl;  /* Syntax highlight type for each character in render.*/
+     int hl_oc;          /* Row had open comment at end in last syntax highlight
+                            check. */
+@@ -100,12 +90,11 @@
+     int screenrows; /* Number of rows that we can show */
+     int screencols; /* Number of cols that we can show */
+     int numrows;    /* Number of rows */
+-    int rawmode;    /* Is terminal raw mode enabled? */
+     erow *row;      /* Rows */
      int dirty;      /* File modified but not saved. */
      char *filename; /* Currently open filename */
      char statusmsg[80];
@@ -42,18 +67,29 @@
      struct editorSyntax *syntax;    /* Current syntax highlight, or NULL. */
  };
  
-@@ -209,43 +197,17 @@
-     }
- }
+@@ -199,53 +188,13 @@
  
+ /* ======================= Low level terminal handling ====================== */
+ 
+-static struct termios orig_termios; /* In order to restore at exit.*/
+-
+-void disableRawMode(int fd) {
+-    /* Don't even check the return value as it's too late. */
+-    if (E.rawmode) {
+-        tcsetattr(fd,TCSAFLUSH,&orig_termios);
+-        E.rawmode = 0;
+-    }
+-}
+-
 -/* Called at exit to avoid remaining in raw mode. */
 -void editorAtExit(void) {
 -    disableRawMode(STDIN_FILENO);
 -}
 -
 -/* Raw mode: 1960 magic shit. */
- int enableRawMode(int fd) {
--    struct termios raw;
+-int enableRawMode(int fd) {
++static int enableRawMode(int fd) {
+     struct termios raw;
 -
 -    if (E.rawmode) return 0; /* Already enabled. */
 -    if (!isatty(STDIN_FILENO)) goto fatal;
@@ -74,26 +110,24 @@
 -    /* control chars - set return condition: min number of bytes and timer. */
 -    raw.c_cc[VMIN] = 0; /* Return each byte, or zero for timeout. */
 -    raw.c_cc[VTIME] = 1; /* 100 ms timeout (unit is tens of second). */
-+    if (E.rawmode) return 0;
-+    if (tcgetattr(fd,&orig_termios) < 0) return -1;
- 
+-
 -    /* put terminal in raw mode after flushing */
 -    if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) goto fatal;
-+    struct termios raw = orig_termios;
-+    raw.c_iflag &= ~ICRNL;
-+    raw.c_oflag &= ~OPOST;
-+    raw.c_lflag &= ~(ECHO | ICANON);
-+    if (tcsetattr(fd,TCSAFLUSH,&raw) < 0) return -1;
-     E.rawmode = 1;
-     return 0;
+-    E.rawmode = 1;
+-    return 0;
 -
 -fatal:
 -    errno = ENOTTY;
 -    return -1;
++    if (tcgetattr(fd,&raw) < 0) return -1;
++    raw.c_iflag &= ~ICRNL;
++    raw.c_oflag &= ~OPOST;
++    raw.c_lflag &= ~(ECHO | ICANON);
++    return tcsetattr(fd,TCSAFLUSH,&raw);
  }
  
  /* Read a key from the terminal put in raw mode, trying to handle
-@@ -253,21 +215,29 @@
+@@ -253,21 +202,29 @@
  int editorReadKey(int fd) {
      int nread;
      char c, seq[3];
@@ -129,7 +163,7 @@
                      if (seq[2] == '~') {
                          switch(seq[1]) {
                          case '3': return DEL_KEY;
-@@ -294,75 +264,21 @@
+@@ -294,75 +251,21 @@
                  case 'F': return END_KEY;
                  }
              }
@@ -212,18 +246,143 @@
  int is_separator(int c) {
      return c == '\0' || isspace(c) || strchr(",.()+-/*=~%[];",c) != NULL;
  }
-@@ -566,8 +482,8 @@
-     unsigned long long allocsize =
-         (unsigned long long) row->size + tabs*8 + nonprint*9 + 1;
-     if (allocsize > UINT32_MAX) {
+@@ -554,64 +457,58 @@
+ 
+ /* Update the rendered version and the syntax highlight of a row. */
+ void editorUpdateRow(erow *row) {
+-    unsigned int tabs = 0, nonprint = 0;
+-    int j, idx;
+-
+-   /* Create a version of the row we can directly print on the screen,
+-     * respecting tabs, substituting non printable characters with '?'. */
+-    free(row->render);
+-    for (j = 0; j < row->size; j++)
+-        if (row->chars[j] == TAB) tabs++;
+-
+-    unsigned long long allocsize =
+-        (unsigned long long) row->size + tabs*8 + nonprint*9 + 1;
+-    if (allocsize > UINT32_MAX) {
 -        printf("Some line of the edited file is too long for kilo\n");
 -        exit(1);
-+        errno = EOVERFLOW;
-+        kilo_fail("line expansion");
+-    }
+-
+-    row->render = malloc(row->size + tabs*8 + nonprint*9 + 1);
+-    idx = 0;
+-    for (j = 0; j < row->size; j++) {
+-        if (row->chars[j] == TAB) {
+-            row->render[idx++] = ' ';
+-            while((idx+1) % 8 != 0) row->render[idx++] = ' ';
+-        } else {
+-            row->render[idx++] = row->chars[j];
++    size_t tabs = 0;
++    for (int i = 0; i < row->size; ++i)
++        if (row->chars[i] == TAB) ++tabs;
++
++    if (row->render_allocated) free(row->render);
++    row->rsize = row->size;
++    row->render_allocated = tabs != 0;
++    row->render = row->chars;
++    if (tabs) {
++        if (tabs > (UINT32_MAX - (size_t)row->size - 1) / 8) {
++            errno = EOVERFLOW;
++            kilo_fail("line expansion");
++        }
++        row->render = malloc((size_t)row->size + tabs * 8 + 1);
++        int output = 0;
++        for (int i = 0; i < row->size; ++i) {
++            if (row->chars[i] == TAB) {
++                row->render[output++] = ' ';
++                while ((output + 1) % 8) row->render[output++] = ' ';
++            } else {
++                row->render[output++] = row->chars[i];
++            }
+         }
++        row->render[output] = '\0';
++        row->rsize = output;
      }
+-    row->rsize = idx;
+-    row->render[idx] = '\0';
+-
+-    /* Update the syntax highlighting attributes of the row. */
+     editorUpdateSyntax(row);
+ }
  
-     row->render = malloc(row->size + tabs*8 + nonprint*9 + 1);
-@@ -694,7 +610,6 @@
+-/* Insert a row at the specified position, shifting the other rows on the bottom
+- * if required. */
+-void editorInsertRow(int at, char *s, size_t len) {
+-    if (at > E.numrows) return;
++static erow *editorAllocRow(int at, size_t len) {
+     E.row = realloc(E.row,sizeof(erow)*(E.numrows+1));
+-    if (at != E.numrows) {
++    if (at < E.numrows) {
+         memmove(E.row+at+1,E.row+at,sizeof(E.row[0])*(E.numrows-at));
+-        for (int j = at+1; j <= E.numrows; j++) E.row[j].idx++;
++        for (int i = at+1; i <= E.numrows; ++i) E.row[i].idx++;
+     }
+-    E.row[at].size = len;
+-    E.row[at].chars = malloc(len+1);
+-    memcpy(E.row[at].chars,s,len+1);
+-    E.row[at].hl = NULL;
+-    E.row[at].hl_oc = 0;
+-    E.row[at].render = NULL;
+-    E.row[at].rsize = 0;
+-    E.row[at].idx = at;
+-    editorUpdateRow(E.row+at);
++    E.row[at] = (erow){ .idx = at, .size = len, .chars = malloc(len+1) };
+     E.numrows++;
+     E.dirty++;
++    return &E.row[at];
++}
++
++void editorInsertRow(int at, char *s, size_t len) {
++    if (at > E.numrows) return;
++    erow *row = editorAllocRow(at,len);
++    memcpy(row->chars,s,len);
++    row->chars[len] = '\0';
++    editorUpdateRow(row);
+ }
+ 
+ /* Free row's heap allocated stuff. */
+ void editorFreeRow(erow *row) {
+-    free(row->render);
++    if (row->render_allocated) free(row->render);
+     free(row->chars);
+     free(row->hl);
+ }
+@@ -630,32 +527,6 @@
+     E.dirty++;
+ }
+ 
+-/* Turn the editor rows into a single heap-allocated string.
+- * Returns the pointer to the heap-allocated string and populate the
+- * integer pointed by 'buflen' with the size of the string, escluding
+- * the final nulterm. */
+-char *editorRowsToString(int *buflen) {
+-    char *buf = NULL, *p;
+-    int totlen = 0;
+-    int j;
+-
+-    /* Compute count of bytes */
+-    for (j = 0; j < E.numrows; j++)
+-        totlen += E.row[j].size+1; /* +1 is for "\n" at end of every row */
+-    *buflen = totlen;
+-    totlen++; /* Also make space for nulterm */
+-
+-    p = buf = malloc(totlen);
+-    for (j = 0; j < E.numrows; j++) {
+-        memcpy(p,E.row[j].chars,E.row[j].size);
+-        p += E.row[j].size;
+-        *p = '\n';
+-        p++;
+-    }
+-    *p = '\0';
+-    return buf;
+-}
+-
+ /* Insert a character at the specified position in a row, moving the remaining
+  * chars on the right if needed. */
+ void editorRowInsertChar(erow *row, int at, int c) {
+@@ -694,7 +565,6 @@
  void editorRowDelChar(erow *row, int at) {
      if (row->size <= at) return;
      memmove(row->chars+at,row->chars+at+1,row->size-at);
@@ -231,7 +390,7 @@
      row->size--;
      E.dirty++;
  }
-@@ -777,7 +692,7 @@
+@@ -777,7 +647,7 @@
              E.cy--;
          E.cx = filecol;
          if (E.cx >= E.screencols) {
@@ -240,18 +399,38 @@
              E.cx -= shift;
              E.coloff += shift;
          }
-@@ -792,62 +707,74 @@
+@@ -792,62 +662,111 @@
      E.dirty++;
  }
  
 -/* Load the specified program in the editor memory and returns 0 on success
 - * or 1 on error. */
-+/* Load the RAM file through the LibOS descriptor interface. */
- int editorOpen(char *filename) {
+-int editorOpen(char *filename) {
 -    FILE *fp;
--
++/* Read directly into the row allocation after the small scanner finds
++ * its boundaries. Seeking within RAM FS does not copy file contents. */
++static void editorLoadRow(int fd, off_t start, size_t size, off_t resume) {
++    erow *row = editorAllocRow(E.numrows,size);
++    if (size) {
++        if (lseek(fd,start,SEEK_SET) < 0) kilo_fail("seek input row");
++        size_t loaded = 0;
++        while (loaded < size) {
++            ssize_t count = read(fd,row->chars+loaded,size-loaded);
++            if (count <= 0) {
++                if (!count) errno = EIO;
++                kilo_fail("read input row");
++            }
++            loaded += (size_t)count;
++        }
++        if (lseek(fd,resume,SEEK_SET) < 0) kilo_fail("resume input scan");
++    }
++    row->chars[size] = '\0';
++    editorUpdateRow(row);
++}
+ 
 -    E.dirty = 0;
 -    free(E.filename);
++int editorOpen(char *filename) {
      size_t fnlen = strlen(filename)+1;
      E.filename = malloc(fnlen);
      memcpy(E.filename,filename,fnlen);
@@ -275,80 +454,106 @@
 +    int fd = open(filename,O_RDONLY);
 +    if (fd < 0 && errno == ENOENT) return 1;
 +    if (fd < 0) kilo_fail("open");
-+    struct stat info;
-+    if (fstat(fd,&info) < 0) kilo_fail("stat");
-+    size_t size = (size_t)info.st_size;
-+    char *text = malloc(size+1);
-+    size_t used = 0;
-+    while (used < size) {
-+        ssize_t count = read(fd,text+used,size-used);
-+        if (count <= 0) {
-+            if (!count) errno = EIO;
-+            kilo_fail("read");
-+        }
-+        used += (size_t)count;
-+    }
-+    if (close(fd) < 0) kilo_fail("close");
-+    text[size] = '\0';
 +
-+    size_t start = 0;
-+    for (size_t i = 0; i < size; ++i) {
-+        if (text[i] == '\n') {
-+            size_t end = i;
-+            if (end > start && text[end-1] == '\r') --end;
-+            text[end] = '\0';
-+            editorInsertRow(E.numrows,text+start,end-start);
-+            start = i+1;
-+        } else if (!isprint((unsigned char)text[i]) && text[i] != '\t' &&
-+                   !(text[i] == '\r' && i+1 < size && text[i+1] == '\n')) {
-+            errno = EINVAL;
-+            kilo_fail("non-ASCII text");
++    unsigned char chunk[128];
++    off_t line_start = 0, offset = 0;
++    int cr = 0;
++    for (;;) {
++        ssize_t count = read(fd,chunk,sizeof(chunk));
++        if (count < 0) kilo_fail("read input");
++        if (!count) break;
++        for (ssize_t i = 0; i < count; ++i) {
++            unsigned char byte = chunk[i];
++            if (byte == '\n') {
++                off_t end = offset + i;
++                editorLoadRow(fd,line_start,(size_t)(end-line_start-cr),offset+count);
++                line_start = end+1;
++            } else if (cr || (!isprint(byte) && byte != TAB && byte != '\r')) {
++                errno = EINVAL;
++                kilo_fail("non-ASCII text");
++            }
++            cr = byte == '\r';
 +        }
++        offset += count;
++    }
++    if (cr) {
++        errno = EINVAL;
++        kilo_fail("stray carriage return");
      }
 -    free(line);
 -    fclose(fp);
-+    if (start < size) editorInsertRow(E.numrows,text+start,size-start);
-+    free(text);
++    if (offset > line_start) editorLoadRow(fd,line_start,(size_t)(offset-line_start),offset);
++    if (close(fd) < 0) kilo_fail("close");
      E.dirty = 0;
      return 0;
  }
  
 -/* Save the current file on disk. Return 0 on success, 1 on error. */
-+/* RAM FS validates the new size before modifying the existing file. */
- int editorSave(void) {
-     int len;
-     char *buf = editorRowsToString(&len);
-     int fd = open(E.filename,O_RDWR|O_CREAT,0644);
-     if (fd == -1) goto writeerr;
+-int editorSave(void) {
+-    int len;
+-    char *buf = editorRowsToString(&len);
+-    int fd = open(E.filename,O_RDWR|O_CREAT,0644);
+-    if (fd == -1) goto writeerr;
 -
 -    /* Use truncate + a single write(2) call in order to make saving
 -     * a bit safer, under the limits of what we can do in a small editor. */
-     if (ftruncate(fd,len) == -1) goto writeerr;
+-    if (ftruncate(fd,len) == -1) goto writeerr;
 -    if (write(fd,buf,len) != len) goto writeerr;
-+    if (write(fd,buf,len) != len) {
-+        errno = EIO;
-+        goto writeerr;
++static int editorWriteFile(int fd, const char *bytes, size_t size) {
++    while (size) {
++        ssize_t written = write(fd,bytes,size);
++        if (written <= 0) {
++            if (!written) errno = EIO;
++            return -1;
++        }
++        bytes += written;
++        size -= (size_t)written;
 +    }
-+    if (close(fd) < 0) goto writeerr;
++    return 0;
++}
  
 -    close(fd);
-     free(buf);
+-    free(buf);
++/* Check the complete size before changing the RAM file. In the single
++ * domain the successful truncate reserves exactly the bytes written below. */
++int editorSave(void) {
++    int fd = -1;
++    off_t size = 0;
++    uint32_t hash = KILO_HASH_INIT;
++    ++save_result->attempts;
++    for (int i = 0; i < E.numrows; ++i) size += E.row[i].size + 1;
++    fd = open(E.filename,O_RDWR|O_CREAT,0644);
++    if (fd < 0 || ftruncate(fd,size) < 0) goto writeerr;
++    for (int i = 0; i < E.numrows; ++i) {
++        erow *row = &E.row[i];
++        if (editorWriteFile(fd,row->chars,(size_t)row->size) || editorWriteFile(fd,"\n",1))
++            goto writeerr;
++        hash = kilo_hash(hash,row->chars,(size_t)row->size);
++        hash = kilo_hash(hash,"\n",1);
++    }
++    if (close(fd) < 0) goto writeerr;
++
++    save_result->size = (size_t)size;
++    save_result->hash = hash;
++    save_result->error = 0;
      E.dirty = 0;
 -    editorSetStatusMessage("%d bytes written on disk", len);
-+    editorSetStatusMessage("%d bytes saved in RAM", len);
++    editorSetStatusMessage("%d bytes saved in RAM",size);
      return 0;
  
 -writeerr:
+-    free(buf);
+-    if (fd != -1) close(fd);
+-    editorSetStatusMessage("Can't save! I/O error: %s",strerror(errno));
 +writeerr:;
 +    int error = errno;
-     free(buf);
-     if (fd != -1) close(fd);
--    editorSetStatusMessage("Can't save! I/O error: %s",strerror(errno));
++    if (fd >= 0) close(fd);
++    save_result->error = error;
 +    editorSetStatusMessage("Can't save: %s",strerror(error));
      return 1;
  }
  
-@@ -857,24 +784,37 @@
+@@ -857,24 +776,37 @@
   * allocated string where we can append to. This is useful in order to
   * write all the escape sequences in a buffer and flush them to the standard
   * output in a single call, to avoid flickering effects. */
@@ -360,11 +565,11 @@
  };
  
 -#define ABUF_INIT {NULL,0}
-+#define ABUF_INIT {0}
- 
+-
 -void abAppend(struct abuf *ab, const char *s, int len) {
 -    char *new = realloc(ab->b,ab->len+len);
--
++#define ABUF_INIT {0}
+ 
 -    if (new == NULL) return;
 -    memcpy(new+ab->len,s,len);
 -    ab->b = new;
@@ -397,7 +602,7 @@
  }
  
  /* This function writes the whole screen using VT100 escape characters
-@@ -893,8 +833,8 @@
+@@ -893,8 +825,8 @@
          if (filerow >= E.numrows) {
              if (E.numrows == 0 && y == E.screenrows/3) {
                  char welcome[80];
@@ -408,7 +613,7 @@
                  int padding = (E.screencols-welcomelen)/2;
                  if (padding) {
                      abAppend(&ab,"~",1);
-@@ -937,7 +877,7 @@
+@@ -937,7 +869,7 @@
                      int color = editorSyntaxToColor(hl[j]);
                      if (color != current_color) {
                          char buf[16];
@@ -417,7 +622,7 @@
                          current_color = color;
                          abAppend(&ab,buf,clen);
                      }
-@@ -954,9 +894,9 @@
+@@ -954,9 +886,9 @@
      abAppend(&ab,"\x1b[0K",4);
      abAppend(&ab,"\x1b[7m",4);
      char status[80], rstatus[80];
@@ -429,7 +634,7 @@
          "%d/%d",E.rowoff+E.cy+1,E.numrows);
      if (len > E.screencols) len = E.screencols;
      abAppend(&ab,status,len);
-@@ -971,10 +911,10 @@
+@@ -971,10 +903,10 @@
      }
      abAppend(&ab,"\x1b[0m\r\n",6);
  
@@ -442,7 +647,7 @@
          abAppend(&ab,E.statusmsg,msglen <= E.screencols ? msglen : E.screencols);
  
      /* Put cursor at its current position. Note that the horizontal position
-@@ -990,11 +930,10 @@
+@@ -990,11 +922,10 @@
              cx++;
          }
      }
@@ -456,7 +661,7 @@
  }
  
  /* Set an editor status message for the second line of the status, at the
-@@ -1002,9 +941,8 @@
+@@ -1002,9 +933,8 @@
  void editorSetStatusMessage(const char *fmt, ...) {
      va_list ap;
      va_start(ap,fmt);
@@ -467,7 +672,7 @@
  }
  
  /* =============================== Find mode ================================ */
-@@ -1096,8 +1034,8 @@
+@@ -1096,8 +1026,8 @@
                  E.rowoff = current;
                  E.coloff = 0;
                  /* Scroll horizontally as needed. */
@@ -478,16 +683,25 @@
                      E.cx -= diff;
                      E.coloff += diff;
                  }
-@@ -1207,7 +1145,7 @@
+@@ -1188,7 +1118,6 @@
+ void editorProcessKeypress(int fd) {
+     /* When the file is modified, requires Ctrl-q to be pressed N times
+      * before actually quitting. */
+-    static int quit_times = KILO_QUIT_TIMES;
+ 
+     int c = editorReadKey(fd);
+     switch(c) {
+@@ -1207,7 +1136,8 @@
              quit_times--;
              return;
          }
 -        exit(0);
 +        quit_requested = 1;
++        libos_log("Kilo: quit\n");
          break;
      case CTRL_S:        /* Ctrl-s */
          editorSave();
-@@ -1247,7 +1185,7 @@
+@@ -1247,7 +1177,7 @@
          /* Nothing to do for ESC in this mode. */
          break;
      default:
@@ -496,7 +710,7 @@
          break;
      }
  
-@@ -1259,19 +1197,9 @@
+@@ -1259,19 +1189,9 @@
  }
  
  void updateWindowSize(void) {
@@ -519,7 +733,7 @@
  }
  
  void initEditor(void) {
-@@ -1285,24 +1213,24 @@
+@@ -1285,24 +1205,26 @@
      E.filename = NULL;
      E.syntax = NULL;
      updateWindowSize();
@@ -532,7 +746,10 @@
 -        exit(1);
 -    }
 -
-+int kilo_run(char *filename) {
++int kilo_run(char *filename, struct kilo_save *save) {
++    memset(&E,0,sizeof(E));
++    save_result = save;
++    quit_times = KILO_QUIT_TIMES;
      initEditor();
 -    editorSelectSyntaxHighlight(argv[1]);
 -    editorOpen(argv[1]);
@@ -549,7 +766,6 @@
          editorRefreshScreen();
          editorProcessKeypress(STDIN_FILENO);
      }
-+    disableRawMode(STDIN_FILENO);
 +    while (E.numrows) editorFreeRow(&E.row[--E.numrows]);
 +    free(E.row);
 +    free(E.filename);

@@ -1,0 +1,3 @@
+# Preserve the exact upstream checksums and unified-diff context lines.
+upstream/** -text
+patches/*.patch whitespace=-blank-at-eol,-space-before-tab
