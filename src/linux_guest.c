@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "libos.h"
 #include "linux_elf32.h"
+#include "linux_exec.h"
 
 #define STACK_BASE (LINUX_GUEST_STACK_TOP - LINUX_GUEST_STACK_SIZE)
 #define MAX_VECTOR_COUNT 8u
@@ -179,11 +180,14 @@ enum linux_guest_status linux_guest_fetch(const struct linux_guest *guest, uint3
     return copy_out(guest,address,buffer,size,LINUX_PF_X);
 }
 
-enum linux_guest_status linux_guest_step(const struct linux_guest *guest, uint8_t *opcode)
+enum linux_guest_status linux_guest_read_span(const struct linux_guest *guest, uint32_t address,
+                                             size_t size, const unsigned char **data)
 {
-    if (!guest) return LINUX_GUEST_ARGUMENT;
-    enum linux_guest_status status = linux_guest_fetch(guest,guest->cpu.eip,opcode,1);
-    return status == LINUX_GUEST_OK ? LINUX_GUEST_UNSUPPORTED_INSTRUCTION : status;
+    uint32_t offset;
+    int stack;
+    enum linux_guest_status status = translate(guest,address,size,LINUX_PF_R,&offset,&stack);
+    if (status == LINUX_GUEST_OK) *data = (stack ? guest->stack : guest->image) + offset;
+    return status;
 }
 
 const char *linux_guest_error(enum linux_guest_status status)
@@ -203,7 +207,12 @@ const char *linux_guest_error(enum linux_guest_status status)
         [LINUX_GUEST_UNMAPPED] = "unmapped guest range",
         [LINUX_GUEST_PERMISSION] = "guest permission denied",
         [LINUX_GUEST_NOT_LOADED] = "no guest image",
-        [LINUX_GUEST_UNSUPPORTED_INSTRUCTION] = "guest execution not implemented"
+        [LINUX_GUEST_UNSUPPORTED_INSTRUCTION] = "unsupported opcode or interrupt",
+        [LINUX_GUEST_TRUNCATED_INSTRUCTION] = "instruction crosses code boundary",
+        [LINUX_GUEST_ENCODING] = "unsupported operand encoding",
+        [LINUX_GUEST_BAD_JUMP] = "branch target not executable",
+        [LINUX_GUEST_STEP_EXHAUSTED] = "instruction budget exhausted",
+        [LINUX_GUEST_EXITED] = "guest exited"
     };
     return (unsigned)status < sizeof(errors) / sizeof(errors[0]) ? errors[status] : "unknown error";
 }

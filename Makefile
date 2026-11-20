@@ -24,6 +24,8 @@ FLAGS := $(ARCH) -std=c11 -Os -g -ffreestanding -fno-builtin -fno-stack-protecto
          -ffunction-sections -fdata-sections -Wall -Wextra -Werror
 INC := -Iinclude -Isdk/include
 BASE := build/start.o build/runtime.o
+LINUX_LOAD := build/linux_elf32.o build/linux_guest.o build/string.o
+LINUX_EXEC := $(LINUX_LOAD) build/linux_x86.o build/linux_syscall.o
 CORE := build/heap.o build/string.o build/posix.o build/tty.o
 EDITOR := $(CORE) build/app_call.o build/application.o build/kilo.o build/kilo_port.o
 CAT_PORT := ports/sbase-cat
@@ -36,7 +38,8 @@ BOOT_OPTIONS := multi-external multi-vga=1 multi-keyboard=1
 
 .PHONY: all editor apps kernel test integration run run-launcher debug clean verify-source
 .PHONY: linux-elf-tests linux-loader-test run-linux-loader
-all: build/hello.elf apps build/linux-loader.elf
+.PHONY: linux-binary-tests run-linux-elf run-linux-loop
+all: build/hello.elf apps build/linux-loader.elf build/linux-exec.elf build/linux-exec-loop.elf
 editor: build/editor.elf
 apps: editor build/launcher.elf
 
@@ -74,13 +77,13 @@ build/launcher.o: APP_FLAGS := -DAPP_LAUNCHER
 build/editor-oom.o build/editor-long.o build/launcher.o: src/editor_main.c Makefile | build
 	$(CC) $(INC) $(FLAGS) $(APP_FLAGS) -MMD -MP -c $< -o $@
 
-build/linux-sample.o: tests/fixtures/linux-sample.S Makefile | build
+build/linux-%.o: tests/fixtures/linux-%.S Makefile | build
 	$(AS) --32 $< -o $@
 
-build/linux-sample.elf: build/linux-sample.o Makefile
+build/linux-sample.elf build/linux-loop.elf: build/%.elf: build/%.o Makefile
 	$(LD) -m elf_i386 -static -nostdlib --build-id=none -s $< -o $@
 
-build/linux-sample.txt: build/linux-sample.elf
+build/linux-%.txt: build/linux-%.elf
 	sha256sum $< > $@
 	$(READELF) -h -lW -d -n $< >> $@
 	$(OBJDUMP) -d $< >> $@
@@ -88,8 +91,19 @@ build/linux-sample.txt: build/linux-sample.elf
 build/linux_sample_blob.o: src/linux_sample_blob.S build/linux-sample.elf Makefile
 	$(CC) $(ARCH) -fno-pie -g -c $< -o $@
 
+build/linux_loop_blob.o: src/linux_sample_blob.S build/linux-loop.elf Makefile
+	$(CC) $(ARCH) -fno-pie -g -DLINUX_SAMPLE_FILE='"build/linux-loop.elf"' -c $< -o $@
+
 build/linux-loader.elf: $(BASE) build/linux_loader_main.o build/linux_sample_blob.o \
-                        build/linux_elf32.o build/linux_guest.o build/string.o
+                        $(LINUX_LOAD)
+
+build/linux-exec.elf: $(BASE) build/linux_exec_main.o build/linux_sample_blob.o $(LINUX_EXEC)
+build/linux-exec-loop.elf: $(BASE) build/linux_exec_main.o build/linux_loop_blob.o $(LINUX_EXEC)
+
+build/linux_exec_negative.o: tests/linux_exec_cases.c Makefile | build
+	$(CC) $(INC) $(FLAGS) -DLINUX_NATIVE_CHECKS -MMD -MP -c $< -o $@
+
+build/linux-exec-negative.elf: $(BASE) build/linux_exec_negative.o $(LINUX_EXEC)
 
 build/hello.elf: $(BASE) build/hello.o
 build/editor.elf: $(BASE) $(EDITOR) build/editor_main.o
@@ -121,22 +135,43 @@ verify-source:
 	$(PYTHON) scripts/verify_sdk.py
 
 build/linux_elf_test: tests/linux_elf_test.c src/linux_elf32.c src/linux_guest.c \
-                      src/linux_elf32.h include/linux_guest.h include/libos.h Makefile | build
+                      src/linux_elf32.h src/linux_exec.h include/linux_guest.h include/libos.h Makefile | build
 	$(HOST_CC) -std=c11 -g -Wall -Wextra -Werror -Iinclude \
 		-fsanitize=undefined -fno-sanitize-recover=undefined $(filter %.c,$^) -o $@
 
 linux-elf-tests: build/linux_elf_test build/linux-sample.txt
 	build/linux_elf_test build/linux-sample.elf
 
-test: verify-source all build/host-test linux-elf-tests
-	build/host-test
-	$(PYTHON) tests/elf_layout.py build/hello.elf build/editor.elf build/launcher.elf build/linux-loader.elf
+build/linux_exec_test: tests/linux_exec_cases.c src/linux_x86.c src/linux_syscall.c src/linux_guest.c \
+                       src/linux_elf32.c src/linux_exec.h src/linux_elf32.h include/linux_guest.h \
+                       include/libos.h Makefile | build
+	$(HOST_CC) -std=c11 -g -Wall -Wextra -Werror -Iinclude \
+		-fsanitize=undefined -fno-sanitize-recover=undefined $(filter %.c,$^) -o $@
 
-integration: test kernel build/guest-test.elf build/fault-fixture.elf build/editor-oom.elf build/editor-long.elf
+test: verify-source all build/host-test linux-elf-tests build/linux_exec_test
+	build/linux_exec_test
+	build/host-test
+	$(PYTHON) tests/elf_layout.py build/hello.elf build/editor.elf build/launcher.elf build/linux-loader.elf \
+		build/linux-exec.elf build/linux-exec-loop.elf
+
+integration: test kernel build/guest-test.elf build/fault-fixture.elf build/editor-oom.elf build/editor-long.elf build/linux-exec-negative.elf
 	$(PYTHON) tests/integration.py --kernel "$(KERNEL)" --qemu "$(QEMU)" --gdb "$(GDB)"
 
 linux-loader-test: linux-elf-tests build/linux-loader.elf kernel
 	$(PYTHON) tests/integration.py --kernel "$(KERNEL)" --qemu "$(QEMU)" --gdb "$(GDB)" --scenario linux-loader
+
+linux-binary-tests: build/linux_exec_test build/linux-sample.txt build/linux-loop.txt kernel \
+                    build/linux-exec.elf build/linux-exec-loop.elf build/linux-exec-negative.elf
+	build/linux_exec_test
+	$(PYTHON) tests/integration.py --kernel "$(KERNEL)" --qemu "$(QEMU)" --gdb "$(GDB)" \
+		--scenario linux-exec --scenario linux-exec-loop --scenario linux-exec-negative
+
+run-linux-elf run-linux-loop: kernel
+	$(QEMU) $(QEMU_FLAGS) -display none -kernel "$(KERNEL)" -append multi-external -initrd $(LINUX_RUN)
+run-linux-elf: LINUX_RUN := build/linux-exec.elf
+run-linux-elf: build/linux-exec.elf
+run-linux-loop: LINUX_RUN := build/linux-exec-loop.elf
+run-linux-loop: build/linux-exec-loop.elf
 
 run-linux-loader: build/linux-loader.elf kernel
 	$(QEMU) $(QEMU_FLAGS) -display none -kernel "$(KERNEL)" \

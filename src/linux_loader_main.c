@@ -5,7 +5,7 @@
 extern const unsigned char linux_sample_start[], linux_sample_end[];
 
 struct linux_guest guest;
-enum linux_guest_status load_status, step_status, rx_write_status, stack_fetch_status;
+enum linux_guest_status load_status, fetch_status, rx_write_status, stack_fetch_status;
 uint8_t fetched_byte;
 
 int libos_main(void)
@@ -22,11 +22,11 @@ int libos_main(void)
     }
     libos_observe(2);
 
-    step_status = linux_guest_step(&guest,&fetched_byte);
+    fetch_status = linux_guest_fetch(&guest,guest.cpu.eip,&fetched_byte,1);
     rx_write_status = linux_guest_write(&guest,guest.cpu.eip,&fetched_byte,1);
     uint8_t discarded;
     stack_fetch_status = linux_guest_fetch(&guest,guest.cpu.esp,&discarded,1);
-    if (step_status != LINUX_GUEST_UNSUPPORTED_INSTRUCTION ||
+    if (fetch_status != LINUX_GUEST_OK ||
         rx_write_status != LINUX_GUEST_PERMISSION || stack_fetch_status != LINUX_GUEST_PERMISSION) {
         libos_log("Linux ELF32: guest access check failed\n");
         return 2;

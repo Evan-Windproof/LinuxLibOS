@@ -97,7 +97,7 @@ static void stack(void)
 static void access_checks(void)
 {
     unsigned char byte = 0;
-    assert(linux_guest_step(&guest,&byte) == LINUX_GUEST_UNSUPPORTED_INSTRUCTION);
+    assert(linux_guest_fetch(&guest,guest.cpu.eip,&byte,1) == LINUX_GUEST_OK);
     assert(byte == input[code.p_offset + header.e_entry - code.p_vaddr]);
     assert(guest.cpu.eip == header.e_entry && guest.cpu.eax == 0);
     assert(linux_guest_write(&guest,guest.cpu.eip,&byte,1) == LINUX_GUEST_PERMISSION);
@@ -119,7 +119,7 @@ static void access_checks(void)
     assert(linux_guest_write(&guest,LINUX_GUEST_STACK_TOP-1,&byte,1) == LINUX_GUEST_OK);
     assert(linux_guest_read(&guest,LINUX_GUEST_STACK_TOP-1,&result,1) == LINUX_GUEST_OK && result == byte);
     guest.cpu.eip = guest.cpu.esp;
-    assert(linux_guest_step(&guest,&byte) == LINUX_GUEST_PERMISSION && byte == 0x5a);
+    assert(linux_guest_fetch(&guest,guest.cpu.eip,&byte,1) == LINUX_GUEST_PERMISSION && byte == 0x5a);
     assert(guest.cpu.eip == guest.cpu.esp);
 
     assert(load(input,input_size) == LINUX_GUEST_OK);

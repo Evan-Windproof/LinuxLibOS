@@ -2,19 +2,22 @@
 
 LinuxLibOS 是基于 Liberums v1.0.0 公共 Kernel SDK 1.2 的独立 i686 Ring 3 Library OS。Phase 1 建立堆、RAM 文件系统、文件描述符和 VGA/PS/2 终端，并移植 Kilo。Phase 2 增加同一用户域内的静态应用选择器和真实上游 sbase `cat`，使 Kilo 保存的 RAM 文件可以由另一个应用读出。
 
-Phase 3.1 新增 Linux i386 静态 ET_EXEC 装载基础。原样读取独立 ELF、验证并建立客体段和初始栈，提供受限取指接口。Linux 指令执行和系统调用翻译尚未实现。 [Phase 3.1 概览](docs/phase3-1-overview.md) · [验收](docs/phase3-1-validation.md)
+支持通过用户态解释器受限执行未经修改的静态 Linux i386 ELF32。Phase 3.2 在既有装载与初始栈基础上运行两个独立 ELF，支持 Linux `write` 与 `exit`。 [Phase 3.2 概览](docs/phase3-2-overview.md) · [验收](docs/phase3-2-validation.md)
 
 ## 构建与使用
 
 需要 GCC 的 freestanding i686 支持、GNU Make 4.3+、GNU Binutils、GNU Patch、Git 和 Python 3。集成测试需要 QEMU i386 和带 Python 的 GDB。GTK 运行入口需要桌面会话及 QEMU 的 GTK 后端。实测版本见 [Phase 2 验证](docs/phase2-validation.md)。
 
 ```sh
-make                  # 构建原有应用和 Linux ELF32 加载演示
+make                  # 构建原有应用及 Linux ELF32 演示
 make run               # 保留原入口，直接启动 Kilo
 make run-launcher      # GTK 应用选择器
 make test              # 宿主 RAM FS 测试、SDK/上游哈希和 ELF 布局
 make integration       # QEMU TCG + GDB + QMP 模拟 PS/2
 make linux-loader-test # 单独验证 Linux ELF32 加载
+make linux-binary-tests # 验证两份原始 ELF 的解释执行
+make run-linux-elf     # 第一个样本，输出到 COM1
+make run-linux-loop    # 第二个样本，输出由客体循环计算
 make debug DISPLAY_BACKEND=none
 make clean
 ```
@@ -25,6 +28,6 @@ Kilo 默认编辑 `/hello.txt`。Ctrl-S 保存，Ctrl-F 搜索，Ctrl-Q 退出�
 
 ## 接口与范围
 
-支持 `open/close/read/write/lseek/fstat/ftruncate/stat/unlink/access/rename` 与 `isatty/ioctl/tcgetattr/tcsetattr`。RAM FS 有四个文件对象槽，每文件最多 4096 字节，内容随用户域结束而消失。应用切换共享文件、TTY 和域资源，使用静态入口函数。尚无 Linux 进程创建、原生 Linux ELF32 运行或持久文件系统。 [POSIX 子集](docs/posix-subset.md) · [兼容性矩阵](docs/compatibility-matrix.md) · [已知限制](docs/known-limitations.md)
+支持 `open/close/read/write/lseek/fstat/ftruncate/stat/unlink/access/rename` 与 `isatty/ioctl/tcgetattr/tcsetattr`。RAM FS 有四个文件对象槽，每文件最多 4096 字节，内容随用户域结束而消失。应用切换共享文件、TTY 和域资源，使用静态入口函数。尚无 Linux 进程创建、Linux ELF32 直接硬件执行或持久文件系统。 [POSIX 子集](docs/posix-subset.md) · [兼容性矩阵](docs/compatibility-matrix.md) · [已知限制](docs/known-limitations.md)
 
 项目代码与 SDK 为 GPL-3.0-or-later。Kilo 上游为 BSD-2-Clause，sbase `cat` 上游为 MIT。 [Kilo 源码与补丁](ports/kilo/README.md) · [sbase 源码与补丁](ports/sbase-cat/README.md)

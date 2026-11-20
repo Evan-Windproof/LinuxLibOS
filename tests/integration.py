@@ -245,6 +245,9 @@ def tools_and_qmp(args, label, directory, modules, options, input_fn):
             if label == "linux-loader":
                 assert "Linux ELF32 loaded; stack ready; execution deferred" in guest_log
                 assert "Hello from Linux i386" not in guest_log
+            if label in ("linux-exec", "linux-exec-loop"):
+                expected = ("Hello from Linux i386", "000") if label == "linux-exec" else ("Loop result: 8", "037")
+                assert f"Linux stdout:\n{expected[0]}\n\nLinux exit {expected[1]}\n" in guest_log
             if label == "oom":
                 assert "Kilo OOM: editorUpdateRow requested " in guest_log
             print(f"PASS: {label}", flush=True)
@@ -283,6 +286,9 @@ def main():
         "launcher": (["launcher.elf"], grants, launcher_input),
         "editor-long": (["editor-long.elf"], grants, long_editor_input),
         "linux-loader": (["linux-loader.elf", "linux-sample.elf"], "", None),
+        "linux-exec": (["linux-exec.elf", "linux-sample.elf"], "", None),
+        "linux-exec-loop": (["linux-exec-loop.elf", "linux-loop.elf"], "", None),
+        "linux-exec-negative": (["linux-exec-negative.elf"], "", None),
     }
     selected = args.scenario or list(cases)
     for label in selected:

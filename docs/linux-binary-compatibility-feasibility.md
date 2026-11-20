@@ -1,6 +1,6 @@
 # 未修改的 Linux i386 ELF32 可行性研究
 
-Phase 1 已实现并测试由公开 SDK 构建的 Liberums ELF32、部分 POSIX 风格 C API 与 Kilo 源码移植。Phase 2 扩展用户态文件接口与静态应用入口，仍通过 Liberums ABI 1.2 运行。Phase 3.1 已验证受限 Linux i386 ET_EXEC 的解析、客体映像、初始栈及首字节取指。Linux 指令执行、syscall 翻译、动态链接和 Linux 进程语义尚未实现。 [Phase 3.1 验证](phase3-1-validation.md)
+Phase 1 已实现并测试由公开 SDK 构建的 Liberums ELF32、部分 POSIX 风格 C API 与 Kilo 源码移植。Phase 2 扩展用户态文件接口与静态应用入口，仍通过 Liberums ABI 1.2 运行。Phase 3.1 已验证受限 Linux i386 ET_EXEC 的解析、客体映像、初始栈及首字节取指。Phase 3.2 已验证静态样本的受限指令解释与 Linux write/exit 翻译。动态链接、直接执行和通用 Linux 进程语义尚未实现。 [Phase 3.2 验证](phase3-2-validation.md)
 
 ## 当前 ABI 冲突
 
@@ -24,4 +24,4 @@ Liberums 外部映像要求自有 ABI Note、固定映像和栈区间、静态 E
 | 通用内核陷入委派 | 当前 ABI 无注册或回复机制；将指定域的 trap 和寄存器以有界事件转交可信授权的用户态处理器，需处理嵌套、恢复、超时与跨域访问 |
 | 未来派生内核最小 ABI 扩展 | 先研究与系统调用号无关的用户陷入委派、用户可控 VA 区域与更弹性的受配额内存。Linux syscall 翻译、文件、信号、TTY 策略仍由 LibOS 提供 |
 
-表中方案均未执行。若后续批准研究，最小实验可选一个固定静态 i386 ELF，在用户态解释少量指令并显式处理 write/exit。完整 Linux 动态用户空间或直接执行未修改的 Linux trap 仍需要单独设计与验证。
+Phase 3.2 实际验证了第一种方案，覆盖两个静态 i386 ELF。其余方案仍需独立研究。

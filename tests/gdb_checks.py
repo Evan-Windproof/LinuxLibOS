@@ -272,7 +272,7 @@ def linux_loader(image_pages):
 
     stage(3)
     user(1)
-    assert value("step_status") == value("LINUX_GUEST_UNSUPPORTED_INSTRUCTION")
+    assert value("fetch_status") == value("LINUX_GUEST_OK")
     assert value("fetched_byte") == first_byte
     assert memory(cpu_address, len(cpu)) == cpu
     permission = value("LINUX_GUEST_PERMISSION")
@@ -287,6 +287,104 @@ def linux_loader(image_pages):
     finished([(3, 0)], image_pages)
 
 
+class NativeSyscalls(gdb.Breakpoint):
+    def __init__(self):
+        super().__init__(f"*{value('&syscall_dispatch'):#x}", type=gdb.BP_HARDWARE_BREAKPOINT,
+                         internal=True)
+        self.calls = []
+
+    def stop(self):
+        frame = word(value("$esp") + 4)
+        self.calls.append((word(frame + 28), word(frame + 16)))
+        return False
+
+
+def guest_bytes(address, size):
+    stack_base = 0xBFFFF000
+    if stack_base <= address and address + size <= 0xC0000000:
+        return memory(value("&guest.stack") + address - stack_base, size)
+    for i in range(value("guest.region_count")):
+        region = f"guest.regions[{i}]"
+        start = value(region + ".base")
+        if start <= address and address + size <= start + value(region + ".size"):
+            offset = value(region + ".offset") + address - start
+            return memory(value("&guest.image") + offset, size)
+    raise AssertionError("unmapped guest address in test")
+
+
+def linux_execute(image_pages):
+    loop = SCENARIO == "linux-exec-loop"
+    fixture = "linux-loop" if loop else "linux-sample"
+    expected = b"Loop result: 8\n" if loop else b"Hello from Linux i386\n"
+    status = 37 if loop else 0
+    steps = 29 if loop else 8
+
+    stage(2)
+    user(1)
+    with open(f"build/{fixture}.elf", "rb") as source:
+        binary = source.read()
+    start = value("&linux_sample_start")
+    assert memory(start, len(binary)) == binary
+    assert value("&linux_sample_end") - start == len(binary)
+    entry = struct.unpack_from("<I", binary, 24)[0]
+    esp = value("guest.cpu.esp")
+    assert value("guest.cpu.eip") == entry != value("$eip") and value("guest.cpu.eax") == 0
+    assert esp % 16 == 0 and guest_bytes(esp, 4) == b"\x01\x00\x00\x00"
+    original = guest_bytes(0x0804A000, len(expected))
+    if loop:
+        assert original == b"Loop result: \0\0"
+    else:
+        assert original == expected
+
+    traps = NativeSyscalls()
+    go("linux_guest_step", f"guest.cpu.eip == {entry + 5}")
+    assert value("guest.steps") == 1
+    assert value("guest.cpu." + ("ecx" if loop else "eax")) == 4
+    if loop:
+        go("linux_guest_step", f"guest.cpu.eip == {entry + 10} && guest.steps == 5")
+        assert value("guest.cpu.ecx") == 3 and value("guest.cpu.edx") == 0x0a32
+
+    go("linux_guest_syscall")
+    user(1)
+    write_pc = value("guest.cpu.eip")
+    assert guest_bytes(write_pc, 2) == b"\xcd\x80"
+    assert value("guest.cpu.eax") == 4 and value("guest.cpu.ebx") == 1
+    assert value("guest.cpu.edx") == len(expected)
+    assert guest_bytes(value("guest.cpu.ecx"), len(expected)) == expected
+    print(f"Linux write(4): native EIP=0x{value('$eip'):08x}, guest EIP=0x{write_pc:08x}, "
+          f"ESP=0x{esp:08x}, bytes={expected!r}")
+    go("linux_guest_step", f"guest.cpu.eip == {write_pc + 2}")
+    assert value("guest.cpu.eax") == len(expected)
+    go("linux_guest_syscall")
+    exit_pc = value("guest.cpu.eip")
+    assert guest_bytes(exit_pc, 2) == b"\xcd\x80"
+    assert value("guest.cpu.eax") == 1 and value("guest.cpu.ebx") == status
+    assert value("guest.cpu.esp") == esp
+    print(f"Linux exit(1): guest EIP=0x{exit_pc:08x}, status={status}")
+
+    stage(3)
+    traps.delete()
+    user(1)
+    assert value("run_status") == value("LINUX_GUEST_EXITED")
+    assert value("guest.exited") == 1 and value("guest.exit_status") == status
+    assert value("guest.steps") == steps and value("guest.cpu.eip") == exit_pc + 2
+    assert set(number for number, _ in traps.calls) == {2, 24}
+    assert bytes(byte for number, byte in traps.calls if number == 2) == expected
+    assert all(pte(1, address) == 0 for address in (entry, esp, VGA, 0x09000000))
+    assert domain(1, "resource_count") == domain(1, "space.device_table") == 0
+    print(f"{steps} guest steps; native ABI calls during execution: LOG_CHAR and REVOKE_POLL")
+    finished([(3, 0)], image_pages)
+
+
+def linux_execute_negative(image_pages):
+    stage(2)
+    user(1)
+    stage(3)
+    assert value("linux_exec_failure") == 0, f"execution check line {value('linux_exec_failure')}"
+    assert domain(1, "resource_count") == domain(1, "space.device_table") == 0
+    finished([(3, 0)], image_pages)
+
+
 def run():
     go("multi_prepared")
     expected_modules = {
@@ -294,6 +392,7 @@ def run():
         "editor-long": [0], "launcher": [0], "linux-loader": [0, -8],
         "no-grant": [0, 0], "no-keyboard-grant": [0, 0],
         "revoke": [0], "forced-revoke": [0], "fault-and-rejection": [0, -8, 0],
+        "linux-exec": [0, -8], "linux-exec-loop": [0, -8], "linux-exec-negative": [0],
     }[SCENARIO]
     assert value("boot.module_count") == len(expected_modules)
     for index, result in enumerate(expected_modules):
@@ -319,6 +418,10 @@ def run():
         launcher(image_pages)
     elif SCENARIO == "linux-loader":
         linux_loader(image_pages)
+    elif SCENARIO in ("linux-exec", "linux-exec-loop"):
+        linux_execute(image_pages)
+    elif SCENARIO == "linux-exec-negative":
+        linux_execute_negative(image_pages)
     elif SCENARIO == "tty":
         stage(2)
         pages = arena(1)
