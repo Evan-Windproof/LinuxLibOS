@@ -211,11 +211,87 @@ def launcher(image_pages):
     finished([(3, 0)], image_pages, pages)
 
 
+def linux_loader(image_pages):
+    stage(2)
+    user(1)
+    with open("build/linux-sample.elf", "rb") as source:
+        sample = source.read()
+    start = value("&linux_sample_start")
+    assert value("&linux_sample_end") - start == len(sample)
+    assert memory(start, len(sample)) == sample
+    entry, phoff = struct.unpack_from("<2I", sample, 24)
+    phent, phnum = struct.unpack_from("<2H", sample, 42)
+    assert value("load_status") == value("LINUX_GUEST_OK")
+    assert value("guest.cpu.eip") == entry != value("$eip")
+    assert value("guest.cpu.eflags") == 0x202
+    assert all(value("guest.cpu." + register) == 0 for register in
+               ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp"))
+    cpu_address = value("&guest.cpu")
+    cpu = memory(cpu_address, value("sizeof(guest.cpu)"))
+
+    base = value("&guest.image")
+    count = used = bss = 0
+    phdr_address = None
+    first_byte = None
+    addresses = []
+    for i in range(phnum):
+        kind, offset, address, _, filesz, memsz, flags, _ = struct.unpack_from(
+            "<8I", sample, phoff + i * phent)
+        if kind != 1:
+            continue
+        mapped = f"guest.regions[{count}]"
+        assert [value(mapped + "." + field) for field in ("base", "size", "offset", "flags")] == [
+            address, memsz, used, flags]
+        if filesz:
+            assert memory(base + used, filesz) == sample[offset:offset + filesz]
+        if memsz > filesz:
+            assert memory(base + used + filesz, memsz - filesz) == bytes(memsz - filesz)
+        if offset <= phoff and phoff + phnum * phent <= offset + filesz and flags & 4:
+            phdr_address = address + phoff - offset
+        if address <= entry < address + filesz and flags & 1:
+            first_byte = sample[offset + entry - address]
+        addresses.append(address)
+        count += 1
+        used += memsz
+        bss += memsz - filesz
+    assert count == value("guest.region_count") and count >= 3 and bss > 0
+    assert phdr_address is not None and first_byte is not None
+
+    stack_base = 0xBFFFF000
+    stack_top = stack_base + value("sizeof(guest.stack)")
+    esp = value("guest.cpu.esp")
+    assert stack_base <= esp < stack_top and esp % 16 == 0
+    stack = memory(value("&guest.stack"), stack_top - stack_base)
+    argc, arg0, arg1, arg_end, env0, env_end = struct.unpack_from("<6I", stack, esp - stack_base)
+    assert argc == 2 and not arg_end and not env_end
+    for pointer, expected in ((arg0, b"linux-sample"), (arg1, b"phase3.1"), (env0, b"LANG=C")):
+        assert esp < pointer < stack_top
+        assert stack[pointer - stack_base:].split(b"\0", 1)[0] == expected
+    aux = struct.unpack_from("<12I", stack, esp - stack_base + 24)
+    assert aux == (3, phdr_address, 4, phent, 5, phnum, 6, 4096, 9, entry, 0, 0)
+
+    stage(3)
+    user(1)
+    assert value("step_status") == value("LINUX_GUEST_UNSUPPORTED_INSTRUCTION")
+    assert value("fetched_byte") == first_byte
+    assert memory(cpu_address, len(cpu)) == cpu
+    permission = value("LINUX_GUEST_PERMISSION")
+    assert value("rx_write_status") == value("stack_fetch_status") == permission
+    assert all(pte(1, address) == 0 for address in addresses + [esp, VGA, 0x09000000])
+    assert domain(1, "resource_count") == domain(1, "space.device_table") == 0
+    for device in ("vga_device", KERNEL_KBD):
+        assert value(device + ".grant_id") == value(device + ".active") == 0
+    print(f"Linux ELF32: {len(sample)} file bytes, {count} LOADs, {used} mapped bytes, {bss} zero bytes")
+    print(f"Linux virtual CPU: EIP={entry:#010x} ESP={esp:#010x} fetched={first_byte:#04x} unchanged registers")
+    print("Kernel rejected raw Linux module; loader allocated no dynamic pages or devices")
+    finished([(3, 0)], image_pages)
+
+
 def run():
     go("multi_prepared")
     expected_modules = {
         "hello": [0], "editor": [0], "tty": [0], "oom": [0],
-        "editor-long": [0], "launcher": [0],
+        "editor-long": [0], "launcher": [0], "linux-loader": [0, -8],
         "no-grant": [0, 0], "no-keyboard-grant": [0, 0],
         "revoke": [0], "forced-revoke": [0], "fault-and-rejection": [0, -8, 0],
     }[SCENARIO]
@@ -241,6 +317,8 @@ def run():
         editor(image_pages)
     elif SCENARIO == "launcher":
         launcher(image_pages)
+    elif SCENARIO == "linux-loader":
+        linux_loader(image_pages)
     elif SCENARIO == "tty":
         stage(2)
         pages = arena(1)

@@ -242,6 +242,9 @@ def tools_and_qmp(args, label, directory, modules, options, input_fn):
                         assert text in screenshot, f"{label}: missing final VGA text {text!r}"
             guest_log = serial.read_text()
             assert "PANIC" not in guest_log
+            if label == "linux-loader":
+                assert "Linux ELF32 loaded; stack ready; execution deferred" in guest_log
+                assert "Hello from Linux i386" not in guest_log
             if label == "oom":
                 assert "Kilo OOM: editorUpdateRow requested " in guest_log
             print(f"PASS: {label}", flush=True)
@@ -279,6 +282,7 @@ def main():
         "fault-and-rejection": (["fault-fixture.elf", "bad.elf", "hello.elf"], "", None),
         "launcher": (["launcher.elf"], grants, launcher_input),
         "editor-long": (["editor-long.elf"], grants, long_editor_input),
+        "linux-loader": (["linux-loader.elf", "linux-sample.elf"], "", None),
     }
     selected = args.scenario or list(cases)
     for label in selected:

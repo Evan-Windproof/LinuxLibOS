@@ -1,6 +1,6 @@
 # 未修改的 Linux i386 ELF32 可行性研究
 
-Phase 1 已实现并测试由公开 SDK 构建的 Liberums ELF32、部分 POSIX 风格 C API 与 Kilo 源码移植。Phase 2 扩展用户态文件接口与静态应用入口，仍通过 Liberums ABI 1.2 运行。Linux ELF 装载器、Linux syscall 翻译、动态链接和 Linux 进程语义均未实现。尚无运行未修改 Linux ELF 的验收证据。
+Phase 1 已实现并测试由公开 SDK 构建的 Liberums ELF32、部分 POSIX 风格 C API 与 Kilo 源码移植。Phase 2 扩展用户态文件接口与静态应用入口，仍通过 Liberums ABI 1.2 运行。Phase 3.1 已验证受限 Linux i386 ET_EXEC 的解析、客体映像、初始栈及首字节取指。Linux 指令执行、syscall 翻译、动态链接和 Linux 进程语义尚未实现。 [Phase 3.1 验证](phase3-1-validation.md)
 
 ## 当前 ABI 冲突
 

@@ -5,4 +5,5 @@
 - 16 KiB 堆仍会限制大量短行、密集 Tab 或碎片化增长。文件容量与编辑堆容量分别受限。
 - 终端为 80×25 VGA 与 US ASCII PS/2 子集。没有终端 EOF 键、信号、作业控制、PTY 或完整 VT100。Launcher 中的 sbase `cat` 查看固定路径。
 - 当前交付验证使用 QMP 模拟 PS/2。Phase 2 GTK 与实体键盘未做人工回归。
-- Vim Tiny 未移植。未实现未修改的 Linux ELF32 或通用 Linux ABI。
+- Linux 客体装载仅支持受限静态 i386 ET_EXEC。段存储为 32 KiB、栈为 4 KiB、文件上限为 32 KiB。当前只提供取指，执行 Linux 指令和翻译 Linux syscall 尚未实现。 [支持边界](linux-elf32-loader.md)
+- Vim Tiny 未移植，动态链接和通用 Linux ABI 尚未实现。

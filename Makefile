@@ -4,8 +4,11 @@
 
 CROSS_COMPILE ?=
 CC = $(CROSS_COMPILE)gcc
+AS = $(CROSS_COMPILE)as
 LD = $(CROSS_COMPILE)ld
 NM = $(CROSS_COMPILE)nm
+READELF = $(CROSS_COMPILE)readelf
+OBJDUMP = $(CROSS_COMPILE)objdump
 PYTHON ?= python3
 QEMU ?= qemu-system-i386
 GDB ?= gdb
@@ -32,7 +35,8 @@ QEMU_FLAGS := -machine pc -accel tcg -cpu qemu32 -m 32M -smp 1 \
 BOOT_OPTIONS := multi-external multi-vga=1 multi-keyboard=1
 
 .PHONY: all editor apps kernel test integration run run-launcher debug clean verify-source
-all: build/hello.elf apps
+.PHONY: linux-elf-tests linux-loader-test run-linux-loader
+all: build/hello.elf apps build/linux-loader.elf
 editor: build/editor.elf
 apps: editor build/launcher.elf
 
@@ -70,6 +74,23 @@ build/launcher.o: APP_FLAGS := -DAPP_LAUNCHER
 build/editor-oom.o build/editor-long.o build/launcher.o: src/editor_main.c Makefile | build
 	$(CC) $(INC) $(FLAGS) $(APP_FLAGS) -MMD -MP -c $< -o $@
 
+build/linux-sample.o: tests/fixtures/linux-sample.S Makefile | build
+	$(AS) --32 $< -o $@
+
+build/linux-sample.elf: build/linux-sample.o Makefile
+	$(LD) -m elf_i386 -static -nostdlib --build-id=none -s $< -o $@
+
+build/linux-sample.txt: build/linux-sample.elf
+	sha256sum $< > $@
+	$(READELF) -h -lW -d -n $< >> $@
+	$(OBJDUMP) -d $< >> $@
+
+build/linux_sample_blob.o: src/linux_sample_blob.S build/linux-sample.elf Makefile
+	$(CC) $(ARCH) -fno-pie -g -c $< -o $@
+
+build/linux-loader.elf: $(BASE) build/linux_loader_main.o build/linux_sample_blob.o \
+                        build/linux_elf32.o build/linux_guest.o build/string.o
+
 build/hello.elf: $(BASE) build/hello.o
 build/editor.elf: $(BASE) $(EDITOR) build/editor_main.o
 build/editor-oom.elf: $(BASE) $(EDITOR) build/editor-oom.o
@@ -99,12 +120,27 @@ verify-source:
 	cd $(CAT_PORT)/upstream && sha256sum -c SHA256SUMS
 	$(PYTHON) scripts/verify_sdk.py
 
-test: verify-source all build/host-test
+build/linux_elf_test: tests/linux_elf_test.c src/linux_elf32.c src/linux_guest.c \
+                      src/linux_elf32.h include/linux_guest.h include/libos.h Makefile | build
+	$(HOST_CC) -std=c11 -g -Wall -Wextra -Werror -Iinclude \
+		-fsanitize=undefined -fno-sanitize-recover=undefined $(filter %.c,$^) -o $@
+
+linux-elf-tests: build/linux_elf_test build/linux-sample.txt
+	build/linux_elf_test build/linux-sample.elf
+
+test: verify-source all build/host-test linux-elf-tests
 	build/host-test
-	$(PYTHON) tests/elf_layout.py build/hello.elf build/editor.elf build/launcher.elf
+	$(PYTHON) tests/elf_layout.py build/hello.elf build/editor.elf build/launcher.elf build/linux-loader.elf
 
 integration: test kernel build/guest-test.elf build/fault-fixture.elf build/editor-oom.elf build/editor-long.elf
 	$(PYTHON) tests/integration.py --kernel "$(KERNEL)" --qemu "$(QEMU)" --gdb "$(GDB)"
+
+linux-loader-test: linux-elf-tests build/linux-loader.elf kernel
+	$(PYTHON) tests/integration.py --kernel "$(KERNEL)" --qemu "$(QEMU)" --gdb "$(GDB)" --scenario linux-loader
+
+run-linux-loader: build/linux-loader.elf kernel
+	$(QEMU) $(QEMU_FLAGS) -display none -kernel "$(KERNEL)" \
+		-append multi-external -initrd build/linux-loader.elf
 
 run: editor kernel
 	$(QEMU) $(QEMU_FLAGS) -display "$(DISPLAY_BACKEND)" -kernel "$(KERNEL)" \

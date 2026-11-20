@@ -23,3 +23,5 @@ flowchart TD
 RAM 文件槽和名字由该域的 BSS 保存。描述符是 LibOS 整数索引，内核页、VGA 和键盘句柄保留各自的 capability 身份。相同虚拟地址可以由每个域的私有 CR3 映射到不同物理页。
 
 Phase 2 增加静态应用选择器。Kilo、sbase `cat` 和内置文件信息共用域资源。应用私有临时对象由入口边界回收，RAM 文件则由 POSIX 层管理。 [应用生命周期](application-lifecycle.md)
+
+Phase 3.1 使用单独的原生加载器 ELF。Liberums 按 ABI 1.2 加载它并进入 Ring 3。用户态解析器随后验证 Linux ET_EXEC，在原生 BSS 中构造客体映像、栈和寄存器。客体地址只通过软件权限检查访问缓冲区。当前执行器入口只取字节。 [客体内存](linux-guest-memory.md)

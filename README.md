@@ -2,16 +2,19 @@
 
 LinuxLibOS 是基于 Liberums v1.0.0 公共 Kernel SDK 1.2 的独立 i686 Ring 3 Library OS。Phase 1 建立堆、RAM 文件系统、文件描述符和 VGA/PS/2 终端，并移植 Kilo。Phase 2 增加同一用户域内的静态应用选择器和真实上游 sbase `cat`，使 Kilo 保存的 RAM 文件可以由另一个应用读出。
 
+Phase 3.1 新增 Linux i386 静态 ET_EXEC 装载基础。原样读取独立 ELF、验证并建立客体段和初始栈，提供受限取指接口。Linux 指令执行和系统调用翻译尚未实现。 [Phase 3.1 概览](docs/phase3-1-overview.md) · [验收](docs/phase3-1-validation.md)
+
 ## 构建与使用
 
 需要 GCC 的 freestanding i686 支持、GNU Make 4.3+、GNU Binutils、GNU Patch、Git 和 Python 3。集成测试需要 QEMU i386 和带 Python 的 GDB。GTK 运行入口需要桌面会话及 QEMU 的 GTK 后端。实测版本见 [Phase 2 验证](docs/phase2-validation.md)。
 
 ```sh
-make                  # 构建 hello、独立 Kilo 和 Launcher ELF
+make                  # 构建原有应用和 Linux ELF32 加载演示
 make run               # 保留原入口，直接启动 Kilo
 make run-launcher      # GTK 应用选择器
 make test              # 宿主 RAM FS 测试、SDK/上游哈希和 ELF 布局
 make integration       # QEMU TCG + GDB + QMP 模拟 PS/2
+make linux-loader-test # 单独验证 Linux ELF32 加载
 make debug DISPLAY_BACKEND=none
 make clean
 ```
